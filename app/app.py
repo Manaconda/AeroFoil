@@ -1702,7 +1702,7 @@ def _block_frozen_web_ui():
     """Frozen accounts should only see the MOTD page in the web UI."""
     try:
         # Let Tinfoil/Cyberfoil flows be handled by tinfoil_access.
-        if _is_shop_client_allowed_for_external():
+        if _is_shop_client_request():
             return None
 
         if not current_user.is_authenticated:
@@ -1793,7 +1793,7 @@ def _client_key():
     ua = request.headers.get('User-Agent') or '-'
     uid = ''
     try:
-        if _is_shop_client_allowed_for_external():
+        if _is_shop_client_request():
             uid = (request.headers.get('Uid') or '').strip()
     except Exception:
         uid = ''
@@ -1802,7 +1802,7 @@ def _client_key():
 
 def _extract_tinfoil_client_meta():
     try:
-        if not _is_shop_client_allowed_for_external():
+        if not _is_shop_client_request():
             return {}
     except Exception:
         return {}
@@ -1937,8 +1937,17 @@ def _is_tinfoil_request():
     return 'tinfoil' in ua.lower()
 
 
+def _has_tinfoil_header_set():
+    return all(header in request.headers for header in TINFOIL_HEADERS)
+
+
 def _is_shop_client_allowed_for_external():
     return _is_tinfoil_request() or _is_cyberfoil_request()
+
+
+def _is_shop_client_request():
+    # Primary detection for shop protocol traffic.
+    return _has_tinfoil_header_set() or _is_shop_client_allowed_for_external()
 
 
 def _log_access(
@@ -2480,13 +2489,9 @@ def tinfoil_access(f):
         _maybe_sync_request_settings()
         hauth_success = None
         auth_success = None
+        auth_error = None
         request.verified_host = None
-        is_shop_client = _is_shop_client_allowed_for_external()
-        is_allowed_external_client = is_shop_client
-        if bool(app_settings.get('shop', {}).get('external_tinfoil_only', False)):
-            remote = _effective_remote_addr()
-            if remote and not _is_private_ip(remote) and not is_allowed_external_client:
-                return jsonify({'error': 'External access is restricted to Tinfoil/CyberFoil clients.'}), 403
+        is_shop_client = _is_shop_client_request()
         # Host verification to prevent hotlinking
         #Tinfoil doesn't send Hauth for file grabs, only directories, so ignore get_game endpoints.
         host_verification = (
@@ -2586,6 +2591,19 @@ def tinfoil_access(f):
                     pass
                 return tinfoil_error(auth_error)
 
+        # External-client restriction: allow authenticated get_game requests even when
+        # the client omits Tinfoil/CyberFoil markers on file-transfer requests.
+        if bool(app_settings.get('shop', {}).get('external_tinfoil_only', False)):
+            remote = _effective_remote_addr()
+            if remote and not _is_private_ip(remote) and not is_shop_client:
+                allow_via_auth_for_get_game = False
+                if request.path.startswith('/api/get_game/'):
+                    if auth_success is None:
+                        auth_success, auth_error, _ = basic_auth(request)
+                    allow_via_auth_for_get_game = bool(auth_success)
+                if not allow_via_auth_for_get_game:
+                    return jsonify({'error': 'External access is restricted to Tinfoil/CyberFoil clients.'}), 403
+
         # Auth success: block frozen accounts from accessing the library.
         try:
             frozen_user = None
@@ -2664,8 +2682,8 @@ def access_shop_auth():
 
 @app.route('/')
 def index():
-    is_shop_client = _is_shop_client_allowed_for_external()
-    is_allowed_external_client = _is_shop_client_allowed_for_external()
+    is_shop_client = _is_shop_client_request()
+    is_allowed_external_client = _is_shop_client_request()
     if bool(app_settings.get('shop', {}).get('external_tinfoil_only', False)):
         remote = _effective_remote_addr()
         if remote and not _is_private_ip(remote) and not is_allowed_external_client:
