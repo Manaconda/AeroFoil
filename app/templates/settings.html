@@ -132,6 +132,17 @@
                     </div>
                 </div>
 
+                <div class="card mb-3" id="libraryConversionStagingStatusCard">
+                    <div class="card-body">
+                        <div class="d-flex align-items-center justify-content-between mb-1">
+                            <div class="fw-semibold">Conversion staging</div>
+                            <span class="badge text-bg-secondary" id="libraryConversionStagingStatusBadge">Disabled</span>
+                        </div>
+                        <div class="small" id="libraryConversionStagingPathLabel">Not enabled</div>
+                        <div class="form-text" id="libraryConversionStagingHint">Set <code>AEROFOIL_CONVERSION_STAGING_ENABLED=true</code> to enable.</div>
+                    </div>
+                </div>
+
                 <div class="card mb-3">
                     <div class="card-body">
                         <div class="d-flex flex-wrap gap-2 align-items-end mb-3">
@@ -1431,12 +1442,44 @@
             type: "POST",
             data: JSON.stringify(payload),
             contentType: "application/json",
-            success: function () {
-                console.log("Library settings saved.");
+            success: function (result) {
+                if (!result['success']) {
+                    console.log("Library settings failed.", result['errors'] || []);
+                }
+            },
+            error: function (xhr) {
+                const result = xhr?.responseJSON || {};
+                if (Array.isArray(result['errors']) && result['errors'].length) {
+                    const msg = result['errors'].map(item => item.error || '').filter(Boolean).join('\n');
+                    if (msg) {
+                        alert(msg);
+                    }
+                }
             }
         });
     }
 
+    function setLibraryConversionStagingStatus(librarySettings) {
+        const rawPath = String((librarySettings || {})['conversion_staging_dir'] || '').trim();
+        const card = $('#libraryConversionStagingStatusCard');
+        const badge = $('#libraryConversionStagingStatusBadge');
+        const pathLabel = $('#libraryConversionStagingPathLabel');
+        const hint = $('#libraryConversionStagingHint');
+
+        if (rawPath) {
+            card.removeClass('bg-body-tertiary text-muted');
+            badge.removeClass('text-bg-secondary').addClass('text-bg-success').text('Enabled');
+            pathLabel.text(rawPath).removeClass('text-muted');
+            hint.html('Temporary conversion output is staged here before files are finalized into library paths.');
+            return;
+        }
+
+        card.addClass('bg-body-tertiary text-muted');
+        badge.removeClass('text-bg-success').addClass('text-bg-secondary').text('Disabled');
+        pathLabel.text('Not enabled').addClass('text-muted');
+        hint.html('Set <code>AEROFOIL_CONVERSION_STAGING_ENABLED=true</code> and keep a mount for <code>/app/conversion-tmp</code> to enable SSD-backed staging.');
+    }
+	
     function testProwlarrSettings() {
         $('#testProwlarrBtn').prop('disabled', true);
         $('#prowlarrTestResult').text('Testing...').removeClass('text-danger text-success').addClass('text-muted');
@@ -1612,6 +1655,7 @@
             $("#libraryAutoMaintenanceCheck").prop("checked", !!librarySettings['auto_maintenance']);
             setInputVal("libraryMaintenanceIntervalInput", librarySettings['maintenance_interval_minutes'] || 720);
             $("#libraryMaintenanceDeleteUpdatesCheck").prop("checked", librarySettings['maintenance_delete_updates'] !== false);
+            setLibraryConversionStagingStatus(librarySettings);
             libraryNamingTemplatesState = normalizeLibraryNamingTemplates(librarySettings['naming_templates']);
             renderLibraryNamingTemplateSelect();
             const maintenanceLastRun = librarySettings['maintenance_last_run'];
