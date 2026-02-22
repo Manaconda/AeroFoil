@@ -1192,6 +1192,8 @@ def api_success(data=None, message=None):
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB for keys.txt files
 MAX_LIBRARY_UPLOAD_SIZE = 64 * 1024 * 1024 * 1024  # 64GB for game files
 MAX_SAVE_UPLOAD_SIZE = 4 * 1024 * 1024 * 1024  # 4GB for save archives
+# Leave room for multipart form overhead beyond the file payload itself.
+DEFAULT_WSGI_MAX_REQUEST_BODY_SIZE = MAX_LIBRARY_UPLOAD_SIZE + (128 * 1024 * 1024)
 SAVE_SYNC_DIR = os.path.join(DATA_DIR, 'saves')
 MAX_TITLE_ID_LENGTH = 16
 MAX_SAVE_NOTE_LENGTH = 120
@@ -6074,13 +6076,25 @@ if __name__ == '__main__':
             wsgi_connection_limit = _read_int_env('AEROFOIL_WSGI_CONNECTION_LIMIT', _read_int_env('OWNFOIL_WSGI_CONNECTION_LIMIT', 1000, minimum=1, maximum=100000), minimum=1, maximum=100000)
             wsgi_channel_timeout = _read_int_env('AEROFOIL_WSGI_CHANNEL_TIMEOUT_S', _read_int_env('OWNFOIL_WSGI_CHANNEL_TIMEOUT_S', 120, minimum=5, maximum=3600), minimum=5, maximum=3600)
             wsgi_cleanup_interval = _read_int_env('AEROFOIL_WSGI_CLEANUP_INTERVAL_S', _read_int_env('OWNFOIL_WSGI_CLEANUP_INTERVAL_S', 30, minimum=1, maximum=600), minimum=1, maximum=600)
+            wsgi_max_request_body_size = _read_int_env(
+                'AEROFOIL_WSGI_MAX_REQUEST_BODY_SIZE',
+                _read_int_env(
+                    'OWNFOIL_WSGI_MAX_REQUEST_BODY_SIZE',
+                    DEFAULT_WSGI_MAX_REQUEST_BODY_SIZE,
+                    minimum=1024 * 1024,
+                    maximum=1024 * 1024 * 1024 * 1024,
+                ),
+                minimum=1024 * 1024,
+                maximum=1024 * 1024 * 1024 * 1024,
+            )
             logger.info(
-                'Starting Waitress WSGI server on %s:%s (threads=%s, connection_limit=%s, channel_timeout=%ss)',
+                'Starting Waitress WSGI server on %s:%s (threads=%s, connection_limit=%s, channel_timeout=%ss, max_request_body_size=%s bytes)',
                 host,
                 port,
                 wsgi_threads,
                 wsgi_connection_limit,
                 wsgi_channel_timeout,
+                wsgi_max_request_body_size,
             )
             waitress_serve(
                 app,
@@ -6090,6 +6104,7 @@ if __name__ == '__main__':
                 connection_limit=wsgi_connection_limit,
                 channel_timeout=wsgi_channel_timeout,
                 cleanup_interval=wsgi_cleanup_interval,
+                max_request_body_size=wsgi_max_request_body_size,
                 # Keep forwarded headers available for AeroFoil's own trusted-proxy checks.
                 clear_untrusted_proxy_headers=False,
                 ident='AeroFoil'

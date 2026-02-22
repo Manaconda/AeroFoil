@@ -92,6 +92,7 @@ New `AEROFOIL_*` variables are preferred. Legacy `OWNFOIL_*` names are still acc
 - `AEROFOIL_WSGI_CONNECTION_LIMIT`: max concurrent Waitress channels (default: `1000`).
 - `AEROFOIL_WSGI_CHANNEL_TIMEOUT_S`: idle channel timeout in seconds (default: `120`).
 - `AEROFOIL_WSGI_CLEANUP_INTERVAL_S`: Waitress cleanup interval in seconds (default: `30`).
+- `AEROFOIL_WSGI_MAX_REQUEST_BODY_SIZE`: max HTTP request body size in bytes for Waitress (default: `68853694464`, about `64.125 GB`).
 - `AEROFOIL_USE_FLASK_DEV`: set to `true`/`1` to force Flask dev server instead of Waitress.
 
 ## Using Python
