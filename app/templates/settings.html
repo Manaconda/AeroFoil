@@ -293,13 +293,18 @@
 
                 <div class="mb-3">
                     <label for="consoleKeysInput" class="form-label">Console keys:</label>
-                    <input class="form-control {% if valid_keys == true %}is-valid{% endif %}" type="file"
-                        accept=".keys,.txt" id="consoleKeysInput">
-                    <div class="valid-feedback">
-                        Keys are valid!
-                    </div>
-                    <div id="invalidConsoleKeysFeedback" class="invalid-feedback">
-                        Invalid keys file!
+                    <div class="d-flex flex-wrap align-items-end gap-2">
+                        <div style="width: 100%; max-width: 420px;">
+                            <input class="form-control" type="file"
+                                accept=".keys,.txt" id="consoleKeysInput">
+                        </div>
+                        <button type="button" id="uploadConsoleKeysBtn" class="btn btn-outline-primary" onClick='uploadConsoleKeys()'>
+                            Upload / Replace keys
+                        </button>
+                        <button type="button" id="deleteConsoleKeysBtn" class="btn btn-outline-danger" onClick='deleteConsoleKeys()' {% if valid_keys != true %}disabled{% endif %}>
+                            Delete keys
+                        </button>
+                        <span id="consoleKeysActionStatus" class="btn btn-sm btn-outline-secondary disabled" role="status" aria-live="polite"></span>
                     </div>
                     <div id="consoleKeysHelp" class="form-text">Console keys are required to decrypt any console
                         content, including
@@ -309,7 +314,7 @@
 
                 <div class="mb-3">
                     <button type="button" id="submitTitlesSettingsBtn" class="btn btn-primary"
-                        onClick='submitTitlesSettings()'>Submit</button>
+                        onClick='submitTitlesSettings()'>Save title settings</button>
                 </div>
                 <div class="mb-3 d-flex align-items-center gap-3">
                     <button type="button" id="refreshMediaCacheBtn" class="btn btn-outline-secondary"
@@ -680,6 +685,7 @@
         active: 'default',
         templates: { default: JSON.parse(JSON.stringify(DEFAULT_LIBRARY_NAMING_TEMPLATE)) }
     };
+    let consoleKeysLoaded = false;
 
     function normalizeLibraryNamingTemplates(raw) {
         const fallback = {
@@ -956,30 +962,6 @@
             region: getInputVal("selectRegion"),
             language: getInputVal("selectLanguage"),
         }
-        file = $('#consoleKeysInput').prop('files')[0];
-
-        if (file != undefined) {
-            formData = new FormData();
-            formData.append("file", file);
-            $.ajax({
-                url: "/api/upload",
-                type: 'POST',
-                data: formData,
-                cache: false,
-                contentType: false,
-                processData: false,
-                success: function (result) {
-                    if (result['success']) {
-                        $('#consoleKeysInput').removeClass('is-invalid');
-                        $('#consoleKeysInput').addClass('is-valid');
-                        $('#missingKeysAlert').addClass('d-none');
-                    } else {
-                        $('#invalidConsoleKeysFeedback').text("Invalid keys file! Invalid keys detected: " + result['errors'].join(', '));
-                        $('#consoleKeysInput').addClass('is-invalid');
-                    }
-                }
-            });
-        }
 
         $.ajax({
             url: "/api/settings/titles",
@@ -1000,6 +982,88 @@
                     });
                 }
                 $('#submitTitlesSettingsBtn').prop('disabled', false);
+            }
+        });
+    }
+
+    function setConsoleKeysLoadedState(loaded) {
+        consoleKeysLoaded = !!loaded;
+        const statusEl = $('#consoleKeysActionStatus');
+        if (loaded) {
+            $('#missingKeysAlert').addClass('d-none');
+            $('#deleteConsoleKeysBtn').prop('disabled', false);
+            statusEl.removeClass('btn-outline-secondary btn-danger').addClass('btn-success').text('Keys loaded');
+        } else {
+            $('#deleteConsoleKeysBtn').prop('disabled', true);
+            $('#missingKeysAlert').removeClass('d-none');
+            statusEl.removeClass('btn-outline-secondary btn-success').addClass('btn-danger').text('No keys loaded');
+        }
+    }
+
+    function uploadConsoleKeys() {
+        const file = $('#consoleKeysInput').prop('files')[0];
+        const statusEl = $('#consoleKeysActionStatus');
+        if (file === undefined) {
+            statusEl.removeClass('btn-success btn-outline-secondary').addClass('btn-danger').text('Select a keys file first.');
+            return;
+        }
+
+        statusEl.removeClass('btn-success btn-danger').addClass('btn-outline-secondary').text('Uploading keys...');
+        $('#uploadConsoleKeysBtn').prop('disabled', true);
+        $('#deleteConsoleKeysBtn').prop('disabled', true);
+        const formData = new FormData();
+        formData.append("file", file);
+        $.ajax({
+            url: "/api/upload",
+            type: 'POST',
+            data: formData,
+            cache: false,
+            contentType: false,
+            processData: false,
+            success: function (result) {
+                if (result['success']) {
+                    setConsoleKeysLoadedState(true);
+                    statusEl.text('Keys uploaded successfully.');
+                    $('#consoleKeysInput').val('');
+                } else {
+                    const errors = result['errors'] || [];
+                    statusEl.removeClass('btn-success btn-outline-secondary').addClass('btn-danger').text('Keys upload failed: ' + errors.join(', '));
+                }
+            },
+            error: function () {
+                statusEl.removeClass('btn-success btn-outline-secondary').addClass('btn-danger').text('Keys upload failed.');
+            },
+            complete: function () {
+                $('#uploadConsoleKeysBtn').prop('disabled', false);
+                $('#deleteConsoleKeysBtn').prop('disabled', !consoleKeysLoaded);
+            }
+        });
+    }
+
+    function deleteConsoleKeys() {
+        const statusEl = $('#consoleKeysActionStatus');
+        if (!confirm('Delete current keys.txt?')) {
+            return;
+        }
+        statusEl.removeClass('btn-success btn-danger').addClass('btn-outline-secondary').text('Deleting keys...');
+        $('#uploadConsoleKeysBtn').prop('disabled', true);
+        $('#deleteConsoleKeysBtn').prop('disabled', true);
+        $.ajax({
+            url: "/api/upload/keys",
+            type: 'DELETE',
+            success: function (result) {
+                if (result && result['success']) {
+                    setConsoleKeysLoadedState(false);
+                } else {
+                    statusEl.removeClass('btn-success btn-outline-secondary').addClass('btn-danger').text('Failed to delete keys.');
+                }
+            },
+            error: function () {
+                statusEl.removeClass('btn-success btn-outline-secondary').addClass('btn-danger').text('Failed to delete keys.');
+            },
+            complete: function () {
+                $('#uploadConsoleKeysBtn').prop('disabled', false);
+                $('#deleteConsoleKeysBtn').prop('disabled', !consoleKeysLoaded);
             }
         });
     }
@@ -1568,6 +1632,7 @@
             setInputVal("selectRegion", titlesSettings['region']);
             $('#selectRegion').trigger('change');
             setInputVal("selectLanguage", titlesSettings['language']);
+            setConsoleKeysLoadedState(!!titlesSettings['valid_keys']);
 
             // Shop settings
             shopSettings = result['shop'];

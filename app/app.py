@@ -4418,7 +4418,7 @@ def upload_file():
         logger.info(f'Validating {file.filename}...')
         valid, validation_errors = validate_keys_file(KEYS_FILE + '.tmp')
         if valid:
-            os.rename(KEYS_FILE + '.tmp', KEYS_FILE)
+            os.replace(KEYS_FILE + '.tmp', KEYS_FILE)
             success = True
             logger.info('Successfully saved valid keys.txt')
             reload_conf()
@@ -4433,6 +4433,31 @@ def upload_file():
         'errors': errors
     } 
     return jsonify(resp)
+
+
+@app.delete('/api/upload/keys')
+@access_required('admin')
+def delete_keys_file():
+    success = False
+    errors = []
+
+    try:
+        if os.path.exists(KEYS_FILE):
+            os.remove(KEYS_FILE)
+            success = True
+            logger.info('Deleted keys.txt')
+            reload_conf()
+            post_library_change()
+        else:
+            errors.append('keys_file_not_found')
+    except Exception as e:
+        logger.error(f'Failed to delete keys file {KEYS_FILE}: {e}')
+        errors.append(str(e))
+
+    return jsonify({
+        'success': success,
+        'errors': errors
+    })
 
 
 @app.post('/api/upload/library')
