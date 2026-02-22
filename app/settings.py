@@ -32,6 +32,18 @@ def _get_config_signature():
         return None
 
 
+def _get_keys_signature():
+    try:
+        stat = os.stat(KEYS_FILE)
+        return (int(stat.st_mtime_ns), int(stat.st_size))
+    except OSError:
+        return None
+
+
+def _get_settings_signature():
+    return (_get_config_signature(), _get_keys_signature())
+
+
 def _is_settings_cache_valid(current_signature, current_time):
     if _settings_cache is None:
         return False
@@ -396,14 +408,14 @@ def load_settings(force_reload=False):
     global _settings_cache, _settings_cache_time, _settings_cache_signature
 
     current_time = time.time()
-    current_signature = _get_config_signature()
+    current_signature = _get_settings_signature()
 
     if not force_reload and _is_settings_cache_valid(current_signature, current_time):
         return _settings_cache
 
     with _settings_cache_lock:
         current_time = time.time()
-        current_signature = _get_config_signature()
+        current_signature = _get_settings_signature()
         if not force_reload and _is_settings_cache_valid(current_signature, current_time):
             return _settings_cache
 
@@ -524,7 +536,7 @@ def load_settings(force_reload=False):
 
         _settings_cache = settings
         _settings_cache_time = current_time
-        _settings_cache_signature = _get_config_signature()
+        _settings_cache_signature = _get_settings_signature()
         return settings
 
 

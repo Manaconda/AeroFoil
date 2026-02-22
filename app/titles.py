@@ -37,6 +37,8 @@ Type = None
 factory = None
 _nsz_import_attempted = False
 _nsz_import_ok = False
+_nsz_import_last_attempt_ts = 0.0
+_NSZ_IMPORT_RETRY_INTERVAL_S = 5
 
 
 def _ensure_nsz_loaded(require_fs=False):
@@ -49,14 +51,21 @@ def _ensure_nsz_loaded(require_fs=False):
     global factory
     global _nsz_import_attempted
     global _nsz_import_ok
+    global _nsz_import_last_attempt_ts
 
     if _nsz_import_ok and (not require_fs or factory is not None):
         return True
 
-    if _nsz_import_attempted and not _nsz_import_ok:
+    now = time.time()
+    if (
+        _nsz_import_attempted
+        and not _nsz_import_ok
+        and (now - float(_nsz_import_last_attempt_ts or 0.0)) < _NSZ_IMPORT_RETRY_INTERVAL_S
+    ):
         return False
 
     _nsz_import_attempted = True
+    _nsz_import_last_attempt_ts = now
     try:
         from nsz.nut import Keys as _Keys
         Keys = _Keys

@@ -353,7 +353,7 @@ def identify_library_files(library):
         _diag_phase_end(phase, reason='library_not_found')
         logger.warning(f'Library path {library_path} is not registered in database.')
         return
-    include_filename_retry = bool(titles_lib.Keys.keys_loaded)
+    include_filename_retry = bool(titles_lib.keys_loaded())
     include_orphaned = True
     nb_to_identify = count_file_ids_for_identification(
         library_id,
