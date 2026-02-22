@@ -1,5 +1,6 @@
 import copy
 import gc
+import hashlib
 import os
 import re
 import shutil
@@ -1198,6 +1199,84 @@ def _resolve_existing_output_path(preferred_path):
         return alt
     return preferred_path
 
+def _get_conversion_staging_dir():
+    try:
+        from app.settings import load_settings
+        settings = load_settings()
+    except Exception:
+        return ''
+    library_cfg = settings.get('library', {}) if isinstance(settings, dict) else {}
+    raw_dir = str(library_cfg.get('conversion_staging_dir') or '').strip()
+    if not raw_dir:
+        return ''
+    return os.path.abspath(os.path.expanduser(raw_dir))
+
+def _ensure_conversion_staging_dir(path):
+    if not path:
+        return True, None
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception as e:
+        return False, f"Failed to create conversion staging directory {path}: {e}"
+    if not os.path.isdir(path):
+        return False, f"Conversion staging directory is not a directory: {path}"
+    if not os.access(path, os.W_OK):
+        return False, f"Conversion staging directory is not writable: {path}"
+    return True, None
+
+def _build_staging_output_path(source_path, expected_output_file, staging_root):
+    if not staging_root:
+        return expected_output_file
+    source_abs = os.path.abspath(str(source_path or ''))
+    hash_suffix = hashlib.sha1(source_abs.encode('utf-8')).hexdigest()[:16]
+    base_name = _sanitize_component(os.path.splitext(os.path.basename(source_abs))[0], fallback='file')
+    staging_dir = os.path.join(staging_root, f"{base_name}-{hash_suffix}")
+    return os.path.join(staging_dir, os.path.basename(expected_output_file))
+
+def _clear_staging_output_candidates(staged_output_file):
+    candidates = [staged_output_file]
+    alt = _alternate_compressed_output_path(staged_output_file)
+    if alt:
+        candidates.append(alt)
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            os.remove(candidate)
+
+def _cleanup_empty_parent_dirs(path, stop_path):
+    current = os.path.abspath(str(path or ''))
+    stop = os.path.abspath(str(stop_path or ''))
+    while current:
+        try:
+            common = os.path.commonpath([current, stop])
+        except ValueError:
+            break
+        if common != stop:
+            break
+        if current == stop:
+            break
+        try:
+            os.rmdir(current)
+        except OSError:
+            break
+        current = os.path.dirname(current)
+
+def _final_output_path_from_source(source_path, produced_output_path):
+    source_dir = os.path.dirname(str(source_path or ''))
+    produced_name = os.path.basename(str(produced_output_path or ''))
+    if not produced_name:
+        produced_name = os.path.basename(_expected_compressed_output_path(source_path))
+    return os.path.join(source_dir, produced_name)
+
+def _finalize_staged_conversion_output(source_path, staged_output_path, staging_root):
+    final_output_path = _final_output_path_from_source(source_path, staged_output_path)
+    existing_final = _resolve_existing_output_path(final_output_path)
+    if existing_final and os.path.exists(existing_final):
+        raise FileExistsError(f"Output already exists: {existing_final}")
+    os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
+    shutil.move(staged_output_path, final_output_path)
+    _cleanup_empty_parent_dirs(os.path.dirname(staged_output_path), staging_root)
+    return final_output_path
+
 def _summarize_conversion_failure(log_text, output_file=None):
     text = str(log_text or '')
     lowered = text.lower()
@@ -2006,6 +2085,15 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
         add_detail(warning)
         if log_cb:
             log_cb(warning)
+    conversion_staging_dir = _get_conversion_staging_dir()
+    staging_ok, staging_error = _ensure_conversion_staging_dir(conversion_staging_dir)
+    if not staging_ok:
+        results['success'] = False
+        results['errors'].append(staging_error)
+        add_detail(staging_error)
+        return results
+    if conversion_staging_dir and log_cb:
+        log_cb(f"Using conversion staging directory: {conversion_staging_dir}")
 
     query = Files.query.filter(Files.extension.in_(['nsp', 'xci']))
     if library_id:
@@ -2053,8 +2141,8 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                 progress_cb(processed, total_files)
             continue
 
-        output_file = _expected_compressed_output_path(source_path)
-        existing_output = _resolve_existing_output_path(output_file)
+        final_output_file = _expected_compressed_output_path(source_path)
+        existing_output = _resolve_existing_output_path(final_output_file)
         if existing_output and os.path.exists(existing_output):
             results['skipped'] += 1
             add_detail(f"Skip existing output: {existing_output}.")
@@ -2065,19 +2153,32 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                 progress_cb(processed, total_files)
             continue
 
+        command_output_file = _build_staging_output_path(source_path, final_output_file, conversion_staging_dir)
+        if conversion_staging_dir:
+            try:
+                os.makedirs(os.path.dirname(command_output_file), exist_ok=True)
+                _clear_staging_output_candidates(command_output_file)
+            except Exception as e:
+                results['errors'].append(str(e))
+                add_detail(f"Error preparing staging output for {source_path}: {e}.")
+                processed += 1
+                if progress_cb:
+                    progress_cb(processed, total_files)
+                continue
+
         command = _format_nsz_command(
             command_template,
             source_path,
-            output_file,
+            command_output_file,
             threads=threads,
             verify=verify
         )
 
         if dry_run:
             results['converted'] += 1
-            add_detail(f"Plan convert: {source_path} -> {output_file}.")
+            add_detail(f"Plan convert: {source_path} -> {final_output_file}.")
             if log_cb:
-                log_cb(f"Plan convert: {source_path} -> {output_file}.")
+                log_cb(f"Plan convert: {source_path} -> {final_output_file}.")
             processed += 1
             if progress_cb:
                 progress_cb(processed, total_files)
@@ -2094,7 +2195,7 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                 timeout_seconds=timeout_seconds
             )
             if process.returncode != 0:
-                failed_output = _resolve_existing_output_path(output_file)
+                failed_output = _resolve_existing_output_path(command_output_file)
                 failure_message = _summarize_conversion_failure(process.stderr, failed_output)
                 results['errors'].append(failure_message)
                 add_detail(f"Error converting {source_path}: {failure_message}.")
@@ -2102,7 +2203,7 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                 if progress_cb:
                     progress_cb(processed, total_files)
                 continue
-            output_file = _resolve_existing_output_path(output_file)
+            output_file = _resolve_existing_output_path(command_output_file)
             if not output_file or not os.path.exists(output_file):
                 results['errors'].append(f'Output not found: {output_file}')
                 add_detail(f"Error missing output: {output_file}.")
@@ -2110,6 +2211,24 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                 if progress_cb:
                     progress_cb(processed, total_files)
                 continue
+            if conversion_staging_dir:
+                try:
+                    output_file = _finalize_staged_conversion_output(
+                        source_path=source_path,
+                        staged_output_path=output_file,
+                        staging_root=conversion_staging_dir
+                    )
+                except Exception as e:
+                    try:
+                        _clear_staging_output_candidates(command_output_file)
+                    except Exception:
+                        pass
+                    results['errors'].append(str(e))
+                    add_detail(f"Error finalizing staged output for {source_path}: {e}.")
+                    processed += 1
+                    if progress_cb:
+                        progress_cb(processed, total_files)
+                    continue
 
             output_ext = os.path.splitext(output_file)[1].lstrip('.').lower() or 'nsz'
             if delete_original:
@@ -2251,18 +2370,41 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
         results['details'].append(warning)
         if log_cb:
             log_cb(warning)
-    output_file = _expected_compressed_output_path(source_path)
-    existing_output = _resolve_existing_output_path(output_file)
+    conversion_staging_dir = _get_conversion_staging_dir()
+    staging_ok, staging_error = _ensure_conversion_staging_dir(conversion_staging_dir)
+    if not staging_ok:
+        results['success'] = False
+        results['errors'].append(staging_error)
+        if verbose:
+            results['details'].append(staging_error)
+        return results
+    if conversion_staging_dir and log_cb:
+        log_cb(f"Using conversion staging directory: {conversion_staging_dir}")
+
+    final_output_file = _expected_compressed_output_path(source_path)
+    existing_output = _resolve_existing_output_path(final_output_file)
     if existing_output and os.path.exists(existing_output):
         results['skipped'] = 1
         if verbose:
             results['details'].append(f"Skip existing output: {existing_output}.")
         return results
 
+    command_output_file = _build_staging_output_path(source_path, final_output_file, conversion_staging_dir)
+    if conversion_staging_dir:
+        try:
+            os.makedirs(os.path.dirname(command_output_file), exist_ok=True)
+            _clear_staging_output_candidates(command_output_file)
+        except Exception as e:
+            results['success'] = False
+            results['errors'].append(str(e))
+            if verbose:
+                results['details'].append(f"Error preparing staging output: {e}.")
+            return results
+
     command = _format_nsz_command(
         command_template,
         source_path,
-        output_file,
+        command_output_file,
         threads=threads,
         verify=verify
     )
@@ -2275,7 +2417,7 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
     if dry_run:
         results['converted'] = 1
         if verbose:
-            results['details'].append(f"Plan convert: {source_path} -> {output_file}.")
+            results['details'].append(f"Plan convert: {source_path} -> {final_output_file}.")
         if progress_cb:
             progress_cb(1, 1)
         return results
@@ -2291,7 +2433,7 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
             timeout_seconds=timeout_seconds
         )
         if process.returncode != 0:
-            failed_output = _resolve_existing_output_path(output_file)
+            failed_output = _resolve_existing_output_path(command_output_file)
             failure_message = _summarize_conversion_failure(process.stderr, failed_output)
             results['success'] = False
             results['errors'].append(failure_message)
@@ -2300,7 +2442,7 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
             if progress_cb:
                 progress_cb(1, 1)
             return results
-        output_file = _resolve_existing_output_path(output_file)
+        output_file = _resolve_existing_output_path(command_output_file)
         if not output_file or not os.path.exists(output_file):
             results['success'] = False
             results['errors'].append(f'Output not found: {output_file}')
@@ -2309,6 +2451,25 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
             if progress_cb:
                 progress_cb(1, 1)
             return results
+        if conversion_staging_dir:
+            try:
+                output_file = _finalize_staged_conversion_output(
+                    source_path=source_path,
+                    staged_output_path=output_file,
+                    staging_root=conversion_staging_dir
+                )
+            except Exception as e:
+                try:
+                    _clear_staging_output_candidates(command_output_file)
+                except Exception:
+                    pass
+                results['success'] = False
+                results['errors'].append(str(e))
+                if verbose:
+                    results['details'].append(f"Error finalizing staged output: {e}.")
+                if progress_cb:
+                    progress_cb(1, 1)
+                return results
 
         output_ext = os.path.splitext(output_file)[1].lstrip('.').lower() or 'nsz'
         if delete_original:
