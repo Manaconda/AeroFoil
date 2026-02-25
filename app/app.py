@@ -3609,6 +3609,13 @@ def set_download_settings_api():
 @access_required('admin')
 def set_library_settings_api():
     data = request.json or {}
+    current_settings = load_settings(force_reload=True)
+    merged_library = dict(current_settings.get('library', {}))
+    merged_library.update(data)
+    merged_library['_validate_paths'] = False
+    success, errors = verify_settings('library', merged_library)
+    if not success:
+        return jsonify({'success': False, 'errors': errors}), 400
     set_library_settings(data)
     reload_conf()
     _reschedule_library_maintenance(app)

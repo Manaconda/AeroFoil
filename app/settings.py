@@ -22,6 +22,7 @@ _settings_cache_lock = threading.Lock()
 _keys_validation_cache = {}
 _keys_validation_lock = threading.Lock()
 _keys_validation_cache_max = 16
+_DOCKER_CONVERSION_STAGING_DIR = '/app/conversion-tmp'
 
 
 def _get_config_signature():
@@ -190,6 +191,12 @@ def _normalize_library_naming_templates(raw_templates):
         'templates': normalized,
     }
 
+def _normalize_conversion_staging_dir(raw_path):
+    text = str(raw_path or '').strip()
+    if not text:
+        return ''
+    return os.path.abspath(os.path.expanduser(text))
+
 
 def _normalize_download_search_char_replacements(raw_rules):
     default_rules = (
@@ -235,6 +242,23 @@ def _read_env_csv(key):
     if not raw:
         return []
     return [item.strip() for item in raw.split(',') if item.strip()]
+
+def _resolve_env_conversion_staging_dir():
+    enabled = _read_env_bool('AEROFOIL_CONVERSION_STAGING_ENABLED')
+    if enabled is None:
+        enabled = _read_env_bool('OWNFOIL_CONVERSION_STAGING_ENABLED')
+
+    env_dir = os.environ.get('AEROFOIL_CONVERSION_STAGING_DIR')
+    if env_dir is None:
+        env_dir = os.environ.get('OWNFOIL_CONVERSION_STAGING_DIR')
+
+    if enabled is False:
+        return ''
+    if env_dir is not None:
+        return env_dir
+    if enabled is True:
+        return _DOCKER_CONVERSION_STAGING_DIR
+    return None
 
 def _coerce_bool(value, default=False):
     if isinstance(value, bool):
@@ -492,6 +516,12 @@ def load_settings(force_reload=False):
                 merged = defaults.copy()
                 merged.update(settings.get('library', {}))
                 settings['library'] = merged
+            env_conversion_staging_dir = _resolve_env_conversion_staging_dir()
+            if env_conversion_staging_dir is not None:
+                settings['library']['conversion_staging_dir'] = env_conversion_staging_dir
+            settings['library']['conversion_staging_dir'] = _normalize_conversion_staging_dir(
+                settings['library'].get('conversion_staging_dir')
+            )
             settings['library']['naming_templates'] = _normalize_library_naming_templates(
                 settings['library'].get('naming_templates')
             )
@@ -517,6 +547,12 @@ def load_settings(force_reload=False):
 
         settings['security'] = _normalize_security_settings(settings.get('security'))
         settings.setdefault('library', {})
+        env_conversion_staging_dir = _resolve_env_conversion_staging_dir()
+        if env_conversion_staging_dir is not None:
+            settings['library']['conversion_staging_dir'] = env_conversion_staging_dir
+        settings['library']['conversion_staging_dir'] = _normalize_conversion_staging_dir(
+            settings['library'].get('conversion_staging_dir')
+        )
         settings['library']['naming_templates'] = _normalize_library_naming_templates(
             settings['library'].get('naming_templates')
         )
@@ -553,15 +589,54 @@ def verify_settings(section, data):
     success = True
     errors = []
     if section == 'library':
-        # Check that paths exist
-        for dir in data['paths']:
-            if not os.path.exists(dir):
+        library_paths = list(data.get('paths') or [])
+        validate_paths = bool(data.get('_validate_paths', True))
+        if validate_paths:
+            for dir in library_paths:
+                if not os.path.exists(dir):
+                    success = False
+                    errors.append({
+                        'path': 'library/path',
+                        'error': f"Path {dir} does not exists."
+                    })
+                    break
+        raw_conversion_staging_dir = str(data.get('conversion_staging_dir') or '').strip()
+        conversion_staging_dir = _normalize_conversion_staging_dir(raw_conversion_staging_dir)
+        if conversion_staging_dir:
+            if not os.path.isabs(raw_conversion_staging_dir):
                 success = False
                 errors.append({
-                    'path': 'library/path',
-                    'error': f"Path {dir} does not exists."
+                    'path': 'library/conversion_staging_dir',
+                    'error': 'Conversion staging directory must be an absolute path.'
                 })
-                break
+            elif not os.path.isdir(conversion_staging_dir):
+                success = False
+                errors.append({
+                    'path': 'library/conversion_staging_dir',
+                    'error': f"Path {conversion_staging_dir} does not exist."
+                })
+            elif not os.access(conversion_staging_dir, os.W_OK):
+                success = False
+                errors.append({
+                    'path': 'library/conversion_staging_dir',
+                    'error': f"Path {conversion_staging_dir} is not writable."
+                })
+            else:
+                for library_path in library_paths:
+                    abs_library_path = os.path.abspath(os.path.expanduser(str(library_path or '').strip()))
+                    if not abs_library_path:
+                        continue
+                    try:
+                        common = os.path.commonpath([conversion_staging_dir, abs_library_path])
+                    except ValueError:
+                        continue
+                    if common == abs_library_path:
+                        success = False
+                        errors.append({
+                            'path': 'library/conversion_staging_dir',
+                            'error': 'Conversion staging directory must not be inside a configured library path.'
+                        })
+                        break
     return success, errors
 
 def add_library_path_to_settings(path):
@@ -681,6 +756,10 @@ def set_library_settings(data):
     settings.setdefault('library', {})
     if data and 'naming_templates' in data:
         data['naming_templates'] = _normalize_library_naming_templates(data.get('naming_templates'))
+    if data and 'conversion_staging_dir' in data:
+        data['conversion_staging_dir'] = _normalize_conversion_staging_dir(
+            data.get('conversion_staging_dir')
+        )
     settings['library'].update(data)
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)

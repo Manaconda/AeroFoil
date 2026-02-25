@@ -68,6 +68,7 @@ DEFAULT_SETTINGS = {
         "auto_maintenance": False,
         "maintenance_interval_minutes": 720,
         "maintenance_delete_updates": True,
+        "conversion_staging_dir": "",
         "naming_templates": {
             "active": "default",
             "templates": {
