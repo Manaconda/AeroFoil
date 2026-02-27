@@ -87,7 +87,11 @@ New `AEROFOIL_*` variables are preferred. Legacy `OWNFOIL_*` names are still acc
 - `AEROFOIL_CONVERSION_STAGING_ENABLED`: enable fixed Docker staging path (`/app/conversion-tmp`) for temporary NSP/XCI conversion output (`true`/`false`, default: unset/disabled).
 - `AEROFOIL_CONVERSION_STAGING_DIR`: absolute path for temporary NSP/XCI conversion output (default: empty, which keeps direct in-library conversion output).
 - `SHOP_SECTIONS_CACHE_TTL_S`: cache TTL for `/api/shop/sections` (seconds). Use `none`/unset for rebuild-only (default), `0` to disable caching. Recommended: `none` for stable libraries, or `600`-`900` for periodic refresh.
+- `SHOP_SECTIONS_ALL_ITEMS_CAP`: max number of items retained per discovery section before per-request slicing (default: `300`).
+- `SHOP_SECTIONS_ALL_ITEMS_CAP_NO_TITLEDB`: max number of items retained per discovery section when TitleDB is unavailable (default: `120`).
 - `MEDIA_INDEX_TTL_S`: cache TTL for icon/banner media index (seconds). Use `none`/unset for rebuild-only (default), `0` to disable caching. Recommended: `none` or `600`-`900`.
+- `AEROFOIL_TITLES_TOTAL_CACHE_TTL_S`: cache TTL for `/api/titles` total-count cache (seconds, default: `300`; legacy `OWNFOIL_TITLES_TOTAL_CACHE_TTL_S` also supported).
+- `AEROFOIL_TITLES_TOTAL_CACHE_MAX_ENTRIES`: max entries for `/api/titles` total-count cache (default: `256`; clamped to `16..4096`; legacy `OWNFOIL_TITLES_TOTAL_CACHE_MAX_ENTRIES` also supported).
 - `AEROFOIL_HOST`: bind host for the web server (default: `0.0.0.0`).
 - `AEROFOIL_PORT`: bind port for the web server (default: `8465`).
 - `AEROFOIL_WSGI_THREADS`: Waitress worker thread count (default: `32`).
@@ -147,6 +151,14 @@ In the `Manage` page, you can organize your library structure, delete older upda
 ## Library browser UI
 - Card view: the Base/Update/DLC status icons are displayed above the action buttons.
 - Icon view: the `Game info` button is shown as an overlay on the game tile.
+
+### Discovery sections (`New` and `Recommended`)
+The home-page discovery rows are generated from **owned BASE titles only** (not update/DLC rows), and only when a real library file is linked.
+
+- `New`: sorted by most recent library file id (newest first), then the first items are used for the section.
+- `Recommended`: sorted by highest `download_count` first. If every candidate has `download_count = 0`, AeroFoil falls back to the same ordering as `New`.
+
+For the Web UI, these sections are returned through `/api/titles` as `discovery.newest` and `discovery.recommended`.
 
 ## Game info (TitleDB)
 The `Game info` modal uses TitleDB metadata:
@@ -214,7 +226,11 @@ The same section also includes login protection controls: temporary IP lockout a
 - Optional env var: `AEROFOIL_CONVERSION_STAGING_DIR` (or legacy `OWNFOIL_CONVERSION_STAGING_DIR`) to force a staging path from environment.
 - Cache TTL env vars (seconds):
   - `SHOP_SECTIONS_CACHE_TTL_S`: cache for `/api/shop/sections` (use `none`/unset for rebuild-only, `0` to disable caching).
+  - `SHOP_SECTIONS_ALL_ITEMS_CAP`: max discovery-section item cap before slicing (default: `300`).
+  - `SHOP_SECTIONS_ALL_ITEMS_CAP_NO_TITLEDB`: max discovery-section item cap without TitleDB (default: `120`).
   - `MEDIA_INDEX_TTL_S`: media cache index for icons/banners (use `none`/unset for rebuild-only, `0` to disable caching).
+  - `AEROFOIL_TITLES_TOTAL_CACHE_TTL_S` (legacy `OWNFOIL_TITLES_TOTAL_CACHE_TTL_S`): `/api/titles` total-count cache TTL (default: `300`).
+  - `AEROFOIL_TITLES_TOTAL_CACHE_MAX_ENTRIES` (legacy `OWNFOIL_TITLES_TOTAL_CACHE_MAX_ENTRIES`): `/api/titles` total-count cache capacity (default: `256`, clamped to `16..4096`).
 - Update the container with `docker pull luketanti/aerofoil:latest` and restart it.
 
 ## Reverse proxy: real client IP (Activity page)
