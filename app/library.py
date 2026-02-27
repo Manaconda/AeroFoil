@@ -687,6 +687,7 @@ def update_titles():
                 break
             last_title_pk = title_batch[-1].id
             title_batch_ids = [title.id for title in title_batch]
+            _sync_apps_owned_flags(title_ids=title_batch_ids)
             app_rows = (
                 db.session.query(
                     Apps.title_id,
@@ -1384,6 +1385,25 @@ def _compute_relative_folder(library_path, full_path):
     normalized = folder.replace(library_path, '')
     return normalized if normalized.startswith(os.sep) else os.sep + normalized
 
+def _sync_apps_owned_flags(app_ids=None, title_ids=None):
+    has_files_expr = (
+        db.session.query(app_files.c.app_id)
+        .filter(app_files.c.app_id == Apps.id)
+        .exists()
+    )
+    query = db.session.query(Apps)
+    if app_ids is not None:
+        scoped_app_ids = [int(v) for v in (app_ids or []) if v is not None]
+        if not scoped_app_ids:
+            return 0
+        query = query.filter(Apps.id.in_(scoped_app_ids))
+    elif title_ids is not None:
+        scoped_title_ids = [int(v) for v in (title_ids or []) if v is not None]
+        if not scoped_title_ids:
+            return 0
+        query = query.filter(Apps.title_id.in_(scoped_title_ids))
+    return int(query.update({Apps.owned: has_files_expr}, synchronize_session=False) or 0)
+
 def _replace_or_create_converted_file_row(
     source_file_id,
     source_path,
@@ -1428,6 +1448,8 @@ def _replace_or_create_converted_file_row(
         )
 
     if updated > 0:
+        for app in source_apps:
+            app.owned = True
         return
 
     new_file = Files(
@@ -1450,6 +1472,7 @@ def _replace_or_create_converted_file_row(
     for app in source_apps:
         if new_file not in app.files:
             app.files.append(new_file)
+        app.owned = True
 
 def _normalize_naming_templates(raw_templates):
     default_templates = (
@@ -2280,6 +2303,9 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                     source_last_attempt=source_last_attempt,
                     source_apps=source_apps
                 )
+                for app in source_apps:
+                    app.owned = True
+                _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                 db.session.commit()
                 add_detail(f"Converted and replaced: {old_path} -> {output_file}.")
             else:
@@ -2293,6 +2319,8 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                     for app in source_apps:
                         if existing_file not in app.files:
                             app.files.append(existing_file)
+                        app.owned = True
+                    _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                     db.session.commit()
                     add_detail(f"Converted output already indexed: {output_file}.")
                 else:
@@ -2315,6 +2343,8 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                     db.session.flush()
                     for app in source_apps:
                         app.files.append(new_file)
+                        app.owned = True
+                    _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                     db.session.commit()
                     add_detail(f"Converted: {source_path} -> {output_file}.")
 
@@ -2531,6 +2561,9 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
                 source_last_attempt=source_last_attempt,
                 source_apps=source_apps
             )
+            for app in source_apps:
+                app.owned = True
+            _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
             db.session.commit()
             if verbose:
                 results['details'].append(f"Converted and replaced: {old_path} -> {output_file}.")
@@ -2545,6 +2578,8 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
                 for app in source_apps:
                     if existing_file not in app.files:
                         app.files.append(existing_file)
+                    app.owned = True
+                _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                 db.session.commit()
                 if verbose:
                     results['details'].append(f"Converted output already indexed: {output_file}.")
@@ -2568,6 +2603,8 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
                 db.session.flush()
                 for app in source_apps:
                     app.files.append(new_file)
+                    app.owned = True
+                _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                 db.session.commit()
             if verbose:
                 results['details'].append(f"Converted: {source_path} -> {output_file}.")
