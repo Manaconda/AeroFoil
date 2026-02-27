@@ -137,8 +137,18 @@
     overflow: hidden;
 }
 
-#detailsModal .details-list-scroll {
+#detailsModal .details-pane-stack {
+    display: flex;
+    flex-direction: column;
     height: 100%;
+    min-height: 0;
+    gap: 0.5rem;
+}
+
+#detailsModal .details-list-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
     max-height: none;
     overflow-y: auto;
 }

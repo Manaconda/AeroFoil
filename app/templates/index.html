@@ -1709,41 +1709,45 @@
 
         const updatesTabHtml = versions.length
             ? `
-                <div class="details-list-scroll">
-                    <table class="table table-sm table-striped mb-0">
-                         <thead>
-                             <tr>
-                                 <th scope="col">Version</th>
-                                 <th scope="col">Status</th>
-                                 <th scope="col">Size</th>
-                                 <th scope="col">Release date</th>
-                             </tr>
-                         </thead>
-                        <tbody>
-                            ${versionRows}
-                        </tbody>
-                    </table>
+                <div class="details-pane-stack">
+                    ${actionRow}
+                    <div class="details-list-scroll">
+                        <table class="table table-sm table-striped mb-0">
+                             <thead>
+                                 <tr>
+                                     <th scope="col">Version</th>
+                                     <th scope="col">Status</th>
+                                     <th scope="col">Size</th>
+                                     <th scope="col">Release date</th>
+                                 </tr>
+                             </thead>
+                            <tbody>
+                                ${versionRows}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
-                ${actionRow}
             `
             : '<div class="text-muted py-2">No update version data available.</div>';
 
         const dlcTabHtml = dlcList.length
             ? `
-                <div class="details-list-scroll">
-                    <table class="table table-sm table-striped mb-0">
-                        <thead>
-                            <tr>
-                                <th scope="col">DLC</th>
-                                <th scope="col">Status</th>
-                                <th scope="col">Owned</th>
-                                <th scope="col">Latest</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${dlcRows}
-                        </tbody>
-                    </table>
+                <div class="details-pane-stack">
+                    <div class="details-list-scroll">
+                        <table class="table table-sm table-striped mb-0">
+                            <thead>
+                                <tr>
+                                    <th scope="col">DLC</th>
+                                    <th scope="col">Status</th>
+                                    <th scope="col">Owned</th>
+                                    <th scope="col">Latest</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${dlcRows}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             `
             : '<div class="text-muted py-2">No DLC entries available.</div>';
