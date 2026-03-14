@@ -4143,7 +4143,7 @@ def manage_delete_library_content():
         version=version,
     )
     if not dry_run and results.get('mutated'):
-        post_library_change()
+        _run_post_library_change()
     status_code = 200 if results.get('success') else 400
     return jsonify(results), status_code
 
@@ -6270,8 +6270,7 @@ def shop_banner_api(title_id):
     return response
 
 
-@debounce(10)
-def post_library_change():
+def _run_post_library_change():
     if _is_conversion_running():
         logger.info("Skipping library rebuild: conversion job is running.")
         return
@@ -6322,6 +6321,10 @@ def post_library_change():
             with library_rebuild_lock:
                 library_rebuild_status['in_progress'] = False
                 library_rebuild_status['updated_at'] = time.time()
+
+@debounce(10)
+def post_library_change():
+    _run_post_library_change()
 
 @app.post('/api/library/scan')
 @access_required('admin')
