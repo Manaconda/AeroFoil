@@ -32,8 +32,7 @@
           <div class="border rounded p-3 h-100">
             <div class="fw-semibold">Add request from TitleDB</div>
             <div class="text-muted small mb-2">Search TitleDB and add a request for a title that is not already in the library.</div>
-            <input type="text" class="form-control" id="adminRequestSearchBox" name="admin-request-search" list="adminRequestSearchSuggestions" placeholder="Search by name or title id (e.g. Mario, 0100...)" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false">
-            <datalist id="adminRequestSearchSuggestions"></datalist>
+            <input type="text" class="form-control" id="adminRequestSearchBox" placeholder="Search by name or title id (e.g. Mario, 0100...)" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly>
             <div class="list-group mt-2" id="adminRequestSearchResults"></div>
             <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
               <div class="small text-muted flex-grow-1" id="adminSelectedTitleText">Selected: None</div>
@@ -191,7 +190,6 @@
   let adminSelectedTitle = null;
   let adminRequests = [];
   let adminRequestSearchTimer = null;
-  let adminRequestSuggestions = new Map();
 
   async function apiGet(url) {
     const resp = await fetch(url, { credentials: 'same-origin' });
@@ -217,48 +215,24 @@
     return results.filter(r => r && r.in_library !== true);
   }
 
-  function buildTitleSuggestionLabel(item) {
-    const titleId = String(item?.id || '').trim().toUpperCase();
-    const titleName = String(item?.name || 'Unrecognized').trim() || 'Unrecognized';
-    return titleId ? `${titleName} (${titleId})` : titleName;
-  }
-
-  function updateAdminSearchSuggestions(results) {
-    const datalist = document.getElementById('adminRequestSearchSuggestions');
-    adminRequestSuggestions = new Map();
-    if (!datalist) return;
-    datalist.innerHTML = '';
-
-    const filteredResults = (results || []).filter(item => item && item.in_library !== true);
-    filteredResults.forEach(item => {
-      const titleId = String(item?.id || '').trim().toUpperCase();
-      const label = buildTitleSuggestionLabel(item);
-      [label, titleId].forEach(value => {
-        const normalizedValue = String(value || '').trim();
-        if (!normalizedValue || adminRequestSuggestions.has(normalizedValue)) return;
-        adminRequestSuggestions.set(normalizedValue, item);
-        const option = document.createElement('option');
-        option.value = normalizedValue;
-        datalist.appendChild(option);
-      });
-    });
-  }
-
   function selectAdminTitle(item) {
     adminSelectedTitle = item || null;
     document.getElementById('adminSelectedTitleText').textContent = `Selected: ${item?.name || 'Unrecognized'} (${item?.id || ''})`;
     document.getElementById('adminRequestSubmitStatus').textContent = '';
-    document.getElementById('adminRequestSearchBox').value = buildTitleSuggestionLabel(item);
+    document.getElementById('adminRequestSearchBox').value = `${item?.name || ''}`.trim();
     document.getElementById('adminSubmitRequestBtn').disabled = !adminSelectedTitle;
   }
 
-  function handleAdminSearchSelection() {
-    const query = String(document.getElementById('adminRequestSearchBox')?.value || '').trim();
-    if (!query) return;
-    const match = adminRequestSuggestions.get(query);
-    if (!match) return;
-    selectAdminTitle(match);
-    document.getElementById('adminRequestSearchResults').innerHTML = '';
+  function unlockAdminSearchInput() {
+    const input = document.getElementById('adminRequestSearchBox');
+    if (!input) return;
+    input.removeAttribute('readonly');
+  }
+
+  function lockAdminSearchInput() {
+    const input = document.getElementById('adminRequestSearchBox');
+    if (!input) return;
+    input.setAttribute('readonly', 'true');
   }
 
   function renderTitleSearchResults(boxId, results, onSelect) {
@@ -313,12 +287,10 @@
     if (adminRequestSearchTimer) clearTimeout(adminRequestSearchTimer);
     adminRequestSearchTimer = setTimeout(async () => {
       if (!q) {
-        updateAdminSearchSuggestions([]);
         renderTitleSearchResults('adminRequestSearchResults', [], () => {});
         return;
       }
       const results = await fetchSearchResults(q);
-      updateAdminSearchSuggestions(results);
       renderTitleSearchResults('adminRequestSearchResults', results, item => {
         selectAdminTitle(item);
       });
@@ -523,8 +495,10 @@
     document.getElementById('submitRequestBtn')?.addEventListener('click', submitRequest);
   } else {
     document.getElementById('refreshRequestsBtn')?.addEventListener('click', refreshAdminRequests);
+    document.getElementById('adminRequestSearchBox')?.addEventListener('focus', unlockAdminSearchInput);
+    document.getElementById('adminRequestSearchBox')?.addEventListener('pointerdown', unlockAdminSearchInput);
+    document.getElementById('adminRequestSearchBox')?.addEventListener('blur', lockAdminSearchInput);
     document.getElementById('adminRequestSearchBox')?.addEventListener('input', handleAdminSearchInput);
-    document.getElementById('adminRequestSearchBox')?.addEventListener('change', handleAdminSearchSelection);
     document.getElementById('adminSubmitRequestBtn')?.addEventListener('click', submitAdminRequest);
     document.getElementById('adminSubmitRequestBtn')?.setAttribute('disabled', 'true');
     document.getElementById('adminSearchBox')?.addEventListener('input', renderAdminRequestsTable);
