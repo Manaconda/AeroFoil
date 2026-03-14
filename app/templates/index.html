@@ -51,7 +51,7 @@
         </div>
     </div>
 
-    <div class="row gy-2 gx-3 align-items-center justify-content-md-center mb-3">
+    <div class="row gy-2 gx-3 align-items-center justify-content-md-center mb-3" id="libraryFiltersRow">
 
         <div class="col-auto">
             <div class="btn-group dropdown-center" role="group">
@@ -464,7 +464,16 @@
         });
     }
 
-    function refreshGames(resetPage = false) {
+    function scrollToResults() {
+        const target = document.getElementById('libraryFiltersRow') || document.getElementById('gridContainer');
+        if (!target) return;
+        const top = target.getBoundingClientRect().top;
+        if (top > 24) {
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }
+
+    function refreshGames(resetPage = false, scrollToGrid = false) {
         if (resetPage) {
             currentPage = 1;
         }
@@ -476,6 +485,9 @@
                 }
                 populateGenreDropdown();
                 renderGames();
+                if (scrollToGrid) {
+                    scrollToResults();
+                }
             })
             .catch(() => {});
     }
@@ -635,18 +647,6 @@
         // Sorting is handled server-side via /api/titles.
     }
 
-    function shouldShowDiscovery() {
-        const searchText = ($('#textFilter').val() || '').trim();
-        if (searchText) return false;
-        return (
-            activeTypeFilters.size === 0 &&
-            activeOwnershipFilters.size === 0 &&
-            activeUpdateFilters.size === 0 &&
-            activeCompletionFilters.size === 0 &&
-            activeRecognitionFilters.size === 0
-        );
-    }
-
     function hashStringToInt32(str) {
         // FNV-1a 32-bit
         let h = 0x811c9dc5;
@@ -744,13 +744,14 @@
         const wrapper = document.getElementById('discoverSection');
         if (!wrapper) return;
 
-        if (!shouldShowDiscovery() || !discoverySections) {
+        const newest = discoverySections?.newest || [];
+        const recommended = discoverySections?.recommended || [];
+        if (!newest.length && !recommended.length) {
             wrapper.classList.add('discover-collapsed');
             return;
         }
+
         wrapper.classList.remove('discover-collapsed');
-        const newest = discoverySections.newest || [];
-        const recommended = discoverySections.recommended || [];
 
         renderDiscoverRow('newlyAddedRow', newest);
         renderDiscoverRow('recommendedRow', recommended);
@@ -1439,8 +1440,8 @@
         });
     }
 
-    function recomputeFilteredGames() {
-        refreshGames(true);
+    function recomputeFilteredGames(scrollToGrid = false) {
+        refreshGames(true, scrollToGrid);
     }
 
     function loadFiltersFromStorage() {
@@ -1518,7 +1519,7 @@
             saveGenreToStorage();
             updateGenreButtonLabel();
             renderActiveFilters();
-            recomputeFilteredGames();
+            recomputeFilteredGames(true);
         });
 
         // Event listeners for items per page dropdown
@@ -2457,7 +2458,7 @@
     function filterBySearchText(attributeText) {
         const text = (attributeText || '').trim();
         localStorage.setItem('searchTerm', text);
-        recomputeFilteredGames();
+        recomputeFilteredGames(true);
     }
 
     // Set to store active filters
@@ -2538,7 +2539,7 @@
 
     // Function to apply filters and show/hide game cards with animation
     function applyFilters() {
-        recomputeFilteredGames();
+        recomputeFilteredGames(true);
     }
 
     // $('#btnApplyFilters').on('click', function () {

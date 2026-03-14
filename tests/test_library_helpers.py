@@ -7,7 +7,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 _IMPORT_ERROR = None
+flask_app = None
 try:
+    from app.app import app as flask_app
     from app.app import _sort_library_rows_by_title_name
     from app.library import (
         _build_staging_output_path,
@@ -25,7 +27,6 @@ try:
     )
 except ModuleNotFoundError as exc:
     _IMPORT_ERROR = exc
-from app.app import app as flask_app
 
 
 class LibraryHelperTests(unittest.TestCase):
