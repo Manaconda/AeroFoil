@@ -146,7 +146,7 @@ In the `Settings` page under the `Library` section, you can add directories cont
 There is watchdog in place for all your added directories: files moved, renamed, added or removed will be reflected directly in your library.
 
 ## Library management
-In the `Manage` page, you can organize your library structure, delete older update files, and convert `nsp`/`xci` to `nsz`.
+In the `Manage` page, you can organize your library structure, delete older update files, delete scoped library content, clean up orphaned add-ons, and convert `nsp`/`xci` to `nsz`.
 
 ## Library browser UI
 - Card view: the Base/Update/DLC status icons are displayed above the action buttons.
@@ -164,6 +164,7 @@ For the Web UI, these sections are returned through `/api/titles` as `discovery.
 The `Game info` modal uses TitleDB metadata:
 - `description`: shown as the game summary.
 - `screenshots`: displayed in a grid; click a screenshot to open it larger.
+- `DLC search`: admins can trigger a download search for related add-ons directly from the details flow.
 
 AeroFoil will download the TitleDB descriptions/screenshot dataset on demand to `./data/titledb/US.en.json` (Docker path: `/app/data/titledb/US.en.json`).
 
@@ -210,6 +211,8 @@ AeroFoil can automatically search for missing updates using Prowlarr, route torr
 - Warnings do not block tests; they highlight misconfigurations (e.g. missing indexer IDs or invalid download paths).
 - The downloader runs on a schedule and respects the configured interval, skipping runs if the interval has not elapsed.
 - Completed downloads are detected by torrent category/tag or SABnzbd category and trigger a library scan + refresh.
+- Manual search results include protocol-aware filtering, and pending queue entries can be removed from the downloads page if they become stale.
+- The downloads page shows both pending queue state and active client summaries, adjusting torrent-only columns when only usenet activity is present.
 
 ## Titles configuration
 In the `Settings` page under the `Titles` section is where you specify the language of your Shop (currently the same for all users).
