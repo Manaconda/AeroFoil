@@ -12,6 +12,7 @@ from app.downloads.manager import (
     get_download_ui_visibility,
     get_active_downloads,
     get_downloads_state,
+    manual_search_update,
     queue_download_url,
     search_update_options,
 )
@@ -249,6 +250,58 @@ class QueueRoutingTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIsNone(message)
         self.assertEqual([item["protocol"] for item in results], ["usenet"])
+
+    @patch("app.downloads.manager.queue_download")
+    @patch("app.downloads.manager.pick_best_result")
+    @patch("app.downloads.manager.ProwlarrClient")
+    @patch("app.downloads.manager.titles_lib.get_game_info", return_value={"name": "Example Title"})
+    @patch("app.downloads.manager.titles_lib.release_titledb")
+    @patch("app.downloads.manager.titles_lib.load_titledb")
+    @patch("app.downloads.manager.load_settings")
+    def test_manual_search_update_allows_non_exact_version_match(
+        self,
+        load_settings_mock,
+        load_titledb_mock,
+        release_titledb_mock,
+        get_game_info_mock,
+        prowlarr_client_mock,
+        pick_best_result_mock,
+        queue_download_mock,
+    ):
+        load_settings_mock.return_value = {
+            "downloads": {
+                "prowlarr": {
+                    "url": "http://prowlarr.local",
+                    "api_key": "secret",
+                },
+                "usenet_client": {
+                    "type": "sabnzbd",
+                    "url": "http://sab.local",
+                    "api_key": "secret",
+                    "category": "aerofoil",
+                },
+            }
+        }
+        prowlarr_client_mock.return_value.search.return_value = [
+            {
+                "title": "Example Title Update 1.1.10 NZB-GRP",
+                "protocol": "usenet",
+                "download_url": "https://indexer.example/file.nzb",
+            }
+        ]
+
+        def pick_result(results, **kwargs):
+            self.assertFalse(kwargs["require_exact_version"])
+            return results[0]
+
+        pick_best_result_mock.side_effect = pick_result
+        queue_download_mock.return_value = (True, "ok", "nzo123")
+
+        ok, message = manual_search_update("0100000000010000", 1245184)
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Queued download.")
+        queue_download_mock.assert_called_once()
 
     def test_format_pending_label_falls_back_to_expected_name_for_manual_items(self):
         self.assertEqual(

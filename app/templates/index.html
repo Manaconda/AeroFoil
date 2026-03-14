@@ -1077,38 +1077,32 @@
     }
 
     function buildDownloadSearchRow(item, actionLabel, extraData = {}) {
-        const dataAttrs = Object.entries(extraData)
-            .map(([key, value]) => `data-${key}="${String(value ?? '')}"`)
-            .join(' ');
-        const cells = [
-            `<td>${item.title || '-'}</td>`,
-            `<td>${item.indexer || '-'}</td>`,
-        ];
+        const row = $('<tr></tr>');
+        row.append($('<td></td>').text(item?.title || '-'));
+        row.append($('<td></td>').text(item?.indexer || '-'));
         if (downloadUiVisibility.show_protocol_column) {
-            cells.push(`<td>${getProtocolLabel(item.protocol)}</td>`);
+            row.append($('<td></td>').text(getProtocolLabel(item?.protocol)));
         }
         if (downloadUiVisibility.show_usenet_columns) {
-            cells.push(`<td>${item.age_label || '-'}</td>`);
+            row.append($('<td></td>').text(item?.age_label || '-'));
         }
-        cells.push(`<td>${formatBytes(item.size)}</td>`);
+        row.append($('<td></td>').text(formatBytes(item?.size)));
         if (downloadUiVisibility.show_torrent_columns) {
-            cells.push(
-                `<td>${item.seeders ?? '-'}</td>`,
-                `<td>${item.leechers ?? '-'}</td>`
-            );
+            row.append($('<td></td>').text(item?.seeders ?? '-'));
+            row.append($('<td></td>').text(item?.leechers ?? '-'));
         }
-        cells.push(`
-            <td>
-                <button class="btn btn-sm btn-warning queue-download-btn"
-                    data-download-url="${item.download_url || ''}"
-                    data-title="${item.title || ''}"
-                    data-protocol="${item.protocol || ''}"
-                    ${dataAttrs}>
-                    ${actionLabel}
-                </button>
-            </td>
-        `);
-        return `<tr>${cells.join('')}</tr>`;
+        const actionCell = $('<td></td>');
+        const button = $('<button type="button" class="btn btn-sm btn-warning queue-download-btn"></button>');
+        button.text(actionLabel);
+        button.attr('data-download-url', String(item?.download_url || ''));
+        button.attr('data-title', String(item?.title || ''));
+        button.attr('data-protocol', String(item?.protocol || ''));
+        Object.entries(extraData).forEach(([key, value]) => {
+            button.attr(`data-${key}`, String(value ?? ''));
+        });
+        actionCell.append(button);
+        row.append(actionCell);
+        return row;
     }
 
     function getCardSizeRangeForView(view) {
@@ -1579,7 +1573,7 @@
                     }
                     $('#torrentSearchStatus').text(`Found ${results.length} results.`);
                     results.forEach(item => {
-                        const row = $(buildDownloadSearchRow(item, 'Queue'));
+                        const row = buildDownloadSearchRow(item, 'Queue');
                         $('#torrentSearchResults').append(row);
                     });
                 });
@@ -2304,11 +2298,11 @@
                 }
                 $('#torrentSearchStatus').text(`Found ${results.length} results.`);
                 results.forEach(item => {
-                    const row = $(buildDownloadSearchRow(item, 'Queue update', {
+                    const row = buildDownloadSearchRow(item, 'Queue update', {
                         'title-id': titleId || '',
                         'update-only': 'true',
                         'expected-version': version,
-                    }));
+                    });
                     $('#torrentSearchResults').append(row);
                 });
                 $('#detailsDownloadStatus').text('');
@@ -2344,10 +2338,10 @@
             }
             $('#torrentSearchStatus').text(`Found ${results.length} results.`);
             results.forEach(item => {
-                const row = $(buildDownloadSearchRow(item, 'Queue download', {
+                const row = buildDownloadSearchRow(item, 'Queue download', {
                     'title-id': titleId || '',
                     'update-only': 'false',
-                }));
+                });
                 $('#torrentSearchResults').append(row);
             });
             $('#detailsDownloadStatus').text('');
@@ -2387,11 +2381,11 @@
             }
             $('#torrentSearchStatus').text(`Found ${results.length} results.`);
             results.forEach(item => {
-                const row = $(buildDownloadSearchRow(item, 'Queue update', {
+                const row = buildDownloadSearchRow(item, 'Queue update', {
                     'title-id': titleId || '',
                     'update-only': 'true',
                     'expected-version': version,
-                }));
+                });
                 $('#torrentSearchResults').append(row);
             });
             $('#detailsDownloadStatus').text('');

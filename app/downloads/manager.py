@@ -317,6 +317,7 @@ def manual_search_update(title_id, version):
         search_limit=search_limit,
         allow_duplicates=False,
         allowed_protocols=allowed_protocols,
+        require_exact_version=False,
     )
     return ok, message
 
@@ -450,6 +451,7 @@ def _search_and_queue(
     search_limit,
     allow_duplicates=True,
     allowed_protocols=None,
+    require_exact_version=True,
 ):
     key = f"{update['title_id']}:{update['version']}"
     if not allow_duplicates and _already_tracked(key):
@@ -468,7 +470,7 @@ def _search_and_queue(
             required_terms=required_terms,
             blacklist_terms=blacklist_terms,
             allowed_protocols=allowed_protocols,
-            require_exact_version=True,
+            require_exact_version=require_exact_version,
         )
         if result:
             break
