@@ -450,6 +450,117 @@ class QueueRoutingTests(unittest.TestCase):
         self.assertEqual(state["pending"][0]["label"], "Example Release NSW-GRP")
         self.assertEqual(state["pending"][0]["protocol"], "torrent")
 
+    @patch("app.downloads.manager.list_completed_downloads")
+    @patch("app.downloads.manager.list_active_downloads", return_value=[])
+    @patch("app.downloads.manager._get_completed_poll_targets")
+    @patch("app.downloads.manager.load_settings")
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 123.0,
+        "pending": {
+            "0100000000010000:123": {
+                "title_id": "0100000000010000",
+                "version": 123,
+                "hash": "nzo123",
+                "id": "nzo123",
+                "expected_name": "Example Release NSW-GRP",
+                "title_name": "Example Title",
+                "protocol": "usenet",
+                "client_type": "sabnzbd",
+                "state": "stuck",
+                "state_reason": "move failed",
+                "last_seen_status": "Completed",
+                "last_seen_path": "X:\\fixture-root\\incoming\\Example Release NSW-GRP",
+            }
+        },
+        "completed": set(),
+    })
+    def test_get_downloads_state_prefers_download_name_for_stuck_items(
+        self,
+        _state_lock_mock,
+        load_settings_mock,
+        poll_targets_mock,
+        list_active_mock,
+        list_completed_mock,
+    ):
+        load_settings_mock.return_value = {
+            "downloads": {
+                "usenet_client": {
+                    "type": "sabnzbd",
+                    "url": "http://sab.local",
+                    "api_key": "secret",
+                    "category": "aerofoil",
+                }
+            }
+        }
+        poll_targets_mock.return_value = [("usenet", {"type": "sabnzbd", "category": "aerofoil"})]
+        list_completed_mock.return_value = [{
+            "id": "nzo123",
+            "hash": "nzo123",
+            "protocol": "usenet",
+            "client_type": "sabnzbd",
+            "name": "Example Release NSW-GRP",
+            "path": "X:\\fixture-root\\incoming\\Example Release NSW-GRP",
+        }]
+
+        state = get_downloads_state()
+
+        self.assertEqual(state["pending"][0]["label"], "Example Release NSW-GRP")
+
+    @patch("app.downloads.manager.list_completed_downloads", return_value=[])
+    @patch("app.downloads.manager.list_active_downloads", return_value=[])
+    @patch("app.downloads.manager._get_completed_poll_targets")
+    @patch("app.downloads.manager.load_settings")
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 123.0,
+        "pending": {
+            "010040600C5CE000:655360": {
+                "title_id": "010040600C5CE000",
+                "version": 655360,
+                "hash": "nzo456",
+                "id": "nzo456",
+                "expected_name": "Game Boy Advance Nintendo Switch Online Update v3.2.0 INTERNAL NSW-SUXXORS",
+                "title_name": "Game Boy Advance Nintendo Switch Online",
+                "protocol": "usenet",
+                "client_type": "sabnzbd",
+                "state": "queued",
+                "state_reason": None,
+                "last_seen_status": None,
+                "last_seen_path": None,
+            }
+        },
+        "completed": set(),
+    })
+    def test_get_downloads_state_prefers_download_name_for_inactive_queued_items(
+        self,
+        _state_lock_mock,
+        load_settings_mock,
+        poll_targets_mock,
+        list_active_mock,
+        list_completed_mock,
+    ):
+        load_settings_mock.return_value = {
+            "downloads": {
+                "usenet_client": {
+                    "type": "sabnzbd",
+                    "url": "http://sab.local",
+                    "api_key": "secret",
+                    "category": "aerofoil",
+                }
+            }
+        }
+        poll_targets_mock.return_value = [("usenet", {"type": "sabnzbd", "category": "aerofoil"})]
+
+        state = get_downloads_state()
+
+        self.assertEqual(
+            state["pending"][0]["label"],
+            "Game Boy Advance Nintendo Switch Online Update v3.2.0 INTERNAL NSW-SUXXORS",
+        )
+
     @patch("app.downloads.client.add_nzb")
     def test_queue_download_forwards_update_selection_to_usenet_client(self, add_nzb_mock):
         add_nzb_mock.return_value = (True, "ok", "nzo123")
@@ -1040,7 +1151,7 @@ class CompletedAdoptionTests(unittest.TestCase):
         enqueue_cleanup_roots_mock,
         enqueue_paths_mock,
     ):
-        tmpdir = os.path.join("tests", "_tmp", "downloads_state_persisted")
+        tmpdir = os.path.join(".tmp", "downloads_state_persisted")
         os.makedirs(tmpdir, exist_ok=True)
         state_file = os.path.join(tmpdir, "downloads_state.json")
         with open(state_file, "w", encoding="utf-8") as handle:
@@ -1086,6 +1197,74 @@ class CompletedAdoptionTests(unittest.TestCase):
             _check_completed({})
 
         move_completed_with_reason_mock.assert_called_once()
+        moved_item, moved_info = move_completed_with_reason_mock.call_args.args
+        self.assertEqual(moved_item["id"], "SABnzbd_nzo_2goo76g2")
+        self.assertEqual(moved_info["title_id"], "0100B6E012EBE000")
+        self.assertEqual(moved_info["version"], 1245184)
+        remove_completed_mock.assert_called_once_with("usenet", {"type": "sabnzbd", "category": "aerofoil"}, "SABnzbd_nzo_2goo76g2")
+        enqueue_paths_mock.assert_called_once_with(["X:\\fixture-root\\Example Title [0100]\\Updates\\v1245184\\Example Title.nsp"])
+        enqueue_cleanup_roots_mock.assert_called_once_with([])
+
+    @patch("app.downloads.manager.enqueue_organize_paths")
+    @patch("app.downloads.manager.enqueue_cleanup_roots")
+    @patch("app.downloads.manager.remove_completed_download", return_value=(True, "ok"))
+    @patch("app.downloads.manager._move_completed_with_reason", return_value=("X:\\fixture-root\\Example Title [0100]\\Updates\\v1245184\\Example Title.nsp", None))
+    @patch("app.downloads.manager._infer_update_info_from_completed_item")
+    @patch("app.downloads.manager.list_active_downloads", return_value=[])
+    @patch("app.downloads.manager.list_completed_downloads")
+    @patch("app.downloads.manager._get_completed_poll_targets")
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 0.0,
+        "pending": {
+            "restored:usenet:sabnzbd:SABnzbd_nzo_2goo76g2": {
+                "title_id": None,
+                "version": None,
+                "hash": "SABnzbd_nzo_2goo76g2",
+                "id": "SABnzbd_nzo_2goo76g2",
+                "expected_name": "Example Title Update v1.1.10 TEST-GRP",
+                "title_name": "Example Title Update v1.1.10 TEST-GRP",
+                "protocol": "usenet",
+                "client_type": "sabnzbd",
+                "state": "queued",
+                "state_reason": None,
+                "last_seen_status": "Downloading",
+                "last_seen_path": None,
+            }
+        },
+        "completed": set(),
+    })
+    def test_check_completed_infers_update_info_for_restored_pending_usenet_item(
+        self,
+        _state_lock_mock,
+        poll_targets_mock,
+        list_completed_mock,
+        list_active_mock,
+        infer_update_info_mock,
+        move_completed_with_reason_mock,
+        remove_completed_mock,
+        enqueue_cleanup_roots_mock,
+        enqueue_paths_mock,
+    ):
+        infer_update_info_mock.return_value = {
+            "title_id": "0100B6E012EBE000",
+            "title_name": "Example Title",
+            "version": 1245184,
+        }
+        poll_targets_mock.return_value = [("usenet", {"type": "sabnzbd", "category": "aerofoil"})]
+        list_completed_mock.return_value = [{
+            "id": "SABnzbd_nzo_2goo76g2",
+            "hash": "SABnzbd_nzo_2goo76g2",
+            "protocol": "usenet",
+            "client_type": "sabnzbd",
+            "name": "Example Title Update v1.1.10 TEST-GRP",
+            "path": "X:\\fixture-root\\incoming\\Example Title Update v1.1.10 TEST-GRP",
+        }]
+
+        _check_completed({})
+
+        infer_update_info_mock.assert_called_once()
         moved_item, moved_info = move_completed_with_reason_mock.call_args.args
         self.assertEqual(moved_item["id"], "SABnzbd_nzo_2goo76g2")
         self.assertEqual(moved_info["title_id"], "0100B6E012EBE000")
@@ -1181,6 +1360,25 @@ class CompletedAdoptionTests(unittest.TestCase):
         self.assertIsNone(moved)
         infer_mock.assert_called_once()
         move_mock.assert_not_called()
+
+    @patch("app.downloads.manager._move_completed_with_reason", return_value=("C:\\tests\\library\\Example Title Update", None))
+    @patch("app.downloads.manager._infer_update_info_from_completed_item", return_value=None)
+    def test_adopt_untracked_completed_usenet_update_falls_back_to_generic_move(self, infer_mock, move_completed_with_reason_mock):
+        moved = _adopt_untracked_completed_item({
+            "name": "Example Title Update v3.2.0 TEST-GRP",
+            "path": "C:\\tests\\completed\\Example Title Update v3.2.0 TEST-GRP",
+            "protocol": "usenet",
+            "client_type": "sabnzbd",
+        })
+
+        self.assertEqual(moved, "C:\\tests\\library\\Example Title Update")
+        infer_mock.assert_called_once()
+        move_completed_with_reason_mock.assert_called_once_with({
+            "name": "Example Title Update v3.2.0 TEST-GRP",
+            "path": "C:\\tests\\completed\\Example Title Update v3.2.0 TEST-GRP",
+            "protocol": "usenet",
+            "client_type": "sabnzbd",
+        })
 
 
 class ManagedCompletionStateTests(unittest.TestCase):
@@ -1428,6 +1626,49 @@ class ManagedCompletionStateTests(unittest.TestCase):
         self.assertIn("access denied", message)
         self.assertEqual(downloads_manager._state["pending"]["manual:1"]["state"], "stuck")
         self.assertEqual(downloads_manager._state["pending"]["manual:1"]["state_reason"], "delete failed: access denied")
+
+    @patch("app.downloads.manager._get_download_activity_snapshot")
+    @patch("app.downloads.manager._restore_pending_from_active")
+    @patch("app.downloads.manager.load_settings", return_value={"downloads": {}})
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 0.0,
+        "pending": {
+            "manual:1773523046": {
+                "title_id": None,
+                "version": None,
+                "hash": "abc123",
+                "id": "abc123",
+                "expected_name": "Game",
+                "title_name": "Game",
+                "protocol": "torrent",
+                "client_type": "qbittorrent",
+                "state": "stuck",
+                "state_reason": "delete failed: download client is not configured",
+                "last_seen_status": "stuck",
+                "last_seen_path": None,
+            }
+        },
+        "completed": set(),
+    })
+    def test_remove_pending_download_removes_stale_local_entry_without_live_match(
+        self,
+        _state_lock_mock,
+        load_settings_mock,
+        restore_pending_mock,
+        snapshot_mock,
+    ):
+        snapshot_mock.return_value = {
+            "active_by_protocol": {},
+            "completed_by_protocol": {},
+        }
+
+        ok, message = remove_pending_download("manual:1773523046")
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Removed stale queue entry.")
+        self.assertEqual(downloads_manager._state["pending"], {})
 
 
 if __name__ == "__main__":

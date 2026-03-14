@@ -248,11 +248,25 @@ def _serialize_downloads_state_locked():
 
 
 def _persist_downloads_state_locked():
+    payload = _serialize_downloads_state_locked()
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
-        safe_write_json(DOWNLOADS_STATE_FILE, _serialize_downloads_state_locked())
+        for attempt in range(3):
+            try:
+                safe_write_json(DOWNLOADS_STATE_FILE, payload)
+                return
+            except PermissionError:
+                if attempt >= 2:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+        return
     except Exception as exc:
-        logger.warning("Failed to persist downloads state: %s", exc)
+        try:
+            with open(DOWNLOADS_STATE_FILE, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+            return
+        except Exception as fallback_exc:
+            logger.warning("Failed to persist downloads state: %s", fallback_exc or exc)
 
 
 def _persist_downloads_state():
@@ -332,7 +346,7 @@ def get_downloads_state():
                 "id": info.get("id"),
                 "protocol": info.get("protocol"),
                 "client_type": info.get("client_type"),
-                "label": _format_pending_label(info),
+                "label": _format_pending_display_label(info, state=state, active_match=active_match, completed_match=completed_match),
                 "state": state,
                 "state_reason": state_reason,
                 "deletable": True,
@@ -361,6 +375,18 @@ def _format_pending_label(info):
     if title_name:
         return title_name
     return "Manual download"
+
+
+def _format_pending_display_label(info, state="queued", active_match=None, completed_match=None):
+    if not active_match or state in ("stuck", "completed"):
+        for item in (completed_match, active_match):
+            name = str((item or {}).get("name") or "").strip()
+            if name:
+                return name
+        expected_name = str((info or {}).get("expected_name") or "").strip()
+        if expected_name:
+            return expected_name
+    return _format_pending_label(info)
 
 
 def run_downloads_job(scan_cb=None, post_cb=None):
@@ -490,6 +516,27 @@ def remove_pending_download(key):
         text = str(candidate or "").strip()
         if text and text not in candidate_paths:
             candidate_paths.append(text)
+
+    if not live_match:
+        payload_ok = True
+        payload_failure = None
+        for path in candidate_paths:
+            delete_ok, delete_message = _delete_download_payload(path)
+            if not delete_ok:
+                payload_ok = False
+                payload_failure = delete_message or f"failed to delete {path}"
+                break
+        if payload_ok:
+            with _state_lock:
+                _state["pending"].pop(key, None)
+                _state["completed"].discard(key)
+                _persist_downloads_state_locked()
+            return True, "Removed stale queue entry."
+        with _state_lock:
+            live_info = _state["pending"].get(key)
+            if live_info:
+                _set_pending_stuck(live_info, f"delete failed: {payload_failure or 'cleanup failed'}")
+        return False, f"Failed to remove queued download: {payload_failure or 'cleanup failed'}"
 
     downloader_ok = False
     downloader_message = None
@@ -1041,6 +1088,23 @@ def _match_completed_item(info, completed_items):
     return None
 
 
+def _resolve_completed_update_info(info, completed_item):
+    if not isinstance(info, dict):
+        return info
+    title_id = str(info.get("title_id") or "").strip()
+    version = info.get("version")
+    if title_id and version is not None:
+        return info
+    inferred = _infer_update_info_from_completed_item(completed_item)
+    if not inferred:
+        return info
+    merged = dict(info)
+    merged["title_id"] = inferred.get("title_id")
+    merged["title_name"] = inferred.get("title_name") or merged.get("title_name")
+    merged["version"] = inferred.get("version")
+    return merged
+
+
 def _normalize_match_text(text):
     return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
 
@@ -1156,7 +1220,25 @@ def _adopt_untracked_completed_item(item):
     if inferred:
         moved_path = _move_completed(item, inferred)
     elif _looks_like_update_download(item):
-        return None
+        protocol = str((item or {}).get("protocol") or "").strip().lower()
+        client_type = str((item or {}).get("client_type") or "").strip().lower()
+        if protocol == "usenet" or client_type == "sabnzbd":
+            moved_path, move_reason = _move_completed_with_reason(item)
+            if not moved_path:
+                logger.warning(
+                    "Failed generic import for untracked completed update-like %s download %s: %s",
+                    protocol or client_type or "managed",
+                    item.get("name") or item.get("path") or "",
+                    move_reason or "unknown error",
+                )
+                return None
+            logger.warning(
+                "Adopted untracked completed update-like %s download with generic import because update inference failed: %s",
+                protocol or client_type or "managed",
+                item.get("name") or item.get("path") or "",
+            )
+        else:
+            return None
     else:
         moved_path = _move_completed(item)
     if moved_path:
@@ -1223,7 +1305,8 @@ def _check_completed(downloads, scan_cb=None, post_cb=None):
             if not match:
                 continue
             _update_pending_live_metadata(info, item=match, status="completed")
-            moved_result, move_reason = _move_completed_with_reason(match, info)
+            move_info = _resolve_completed_update_info(info, match)
+            moved_result, move_reason = _move_completed_with_reason(match, move_info)
             moved_match_paths = _coerce_moved_paths(moved_result)
             if not moved_match_paths:
                 logger.warning(
