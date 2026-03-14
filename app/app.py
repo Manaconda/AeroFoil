@@ -2084,7 +2084,7 @@ def _touch_client():
         if uid_value and uid_value != (user.client_uid or ''):
             user.client_uid = uid_value
             updated = True
-        user.last_login_at = datetime.datetime.utcnow()
+        user.last_login_at = utc_now()
         user.last_login_ip = remote or user.last_login_ip
         user.last_login_country = geo.get('country') or user.last_login_country
         user.last_login_country_code = geo.get('country_code') or user.last_login_country_code
@@ -3174,12 +3174,12 @@ def admin_mark_requests_seen_api():
 
     now = None
     try:
-        now = datetime.utcnow()
+        now = utc_now()
     except Exception:
         now = None
 
     try:
-        ts = now or datetime.utcnow()
+        ts = now or utc_now()
 
         if mark_all_open:
             select_stmt = (
