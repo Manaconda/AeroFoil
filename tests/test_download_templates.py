@@ -28,6 +28,16 @@ class DownloadTemplateRegressionTests(unittest.TestCase):
         self.assertNotIn("const row = $(`<tr>${cells.join('')}</tr>`);", content)
         self.assertNotIn("`<td class=\"small\">${(item['name'] || '').toString()}</td>`", content)
 
+    def test_queue_rows_use_safe_dom_construction_and_delete_api(self):
+        content = (REPO_ROOT / "app" / "templates" / "downloads.html").read_text(encoding="utf-8")
+
+        self.assertIn("function loadQueueState() {", content)
+        self.assertIn("const row = $('<tr></tr>');", content)
+        self.assertIn("row.append($('<td class=\"small\"></td>').text((item['label'] || 'Manual download').toString()));", content)
+        self.assertIn("function deleteQueuedDownload(key, button) {", content)
+        self.assertIn("url: '/api/downloads/queue/delete',", content)
+        self.assertNotIn("$('#downloadsQueueList').text(lines.join('\\n'));", content)
+
 
 if __name__ == "__main__":
     unittest.main()

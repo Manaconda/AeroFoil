@@ -197,7 +197,7 @@ def list_completed(url, api_key, category=None, timeout_seconds=15):
     return completed
 
 
-def remove_history(url, api_key, item_id, timeout_seconds=15):
+def remove_history(url, api_key, item_id, timeout_seconds=15, delete_files=False):
     if not item_id:
         return False, "SABnzbd item id is required."
     if not api_key:
@@ -210,7 +210,7 @@ def remove_history(url, api_key, item_id, timeout_seconds=15):
             timeout_seconds=timeout_seconds,
             name="delete",
             value=item_id,
-            del_files=0,
+            del_files=1 if delete_files else 0,
             output="json",
         )
     except Exception as exc:
@@ -219,6 +219,31 @@ def remove_history(url, api_key, item_id, timeout_seconds=15):
     if status in (True, "true", "True", 1, "1"):
         return True, "SABnzbd history entry removed."
     message = payload.get("error") or payload.get("message") or "SABnzbd failed to remove history entry."
+    return False, str(message)
+
+
+def remove_queue_item(url, api_key, item_id, timeout_seconds=15, delete_files=False):
+    if not item_id:
+        return False, "SABnzbd item id is required."
+    if not api_key:
+        return False, "SABnzbd API key is required."
+    try:
+        payload = _sab_request(
+            url,
+            api_key,
+            mode="queue",
+            timeout_seconds=timeout_seconds,
+            name="delete",
+            value=item_id,
+            del_files=1 if delete_files else 0,
+            output="json",
+        )
+    except Exception as exc:
+        return False, str(exc)
+    status = payload.get("status")
+    if status in (True, "true", "True", 1, "1"):
+        return True, "SABnzbd queue item removed."
+    message = payload.get("error") or payload.get("message") or "SABnzbd failed to remove queue item."
     return False, str(message)
 
 
@@ -293,7 +318,7 @@ def _resume_job(url, api_key, nzo_id, timeout_seconds=15):
     return payload.get("status") in (True, "true", "True", 1, "1")
 
 
-def _delete_job(url, api_key, nzo_id, timeout_seconds=15):
+def _delete_job(url, api_key, nzo_id, timeout_seconds=15, delete_files=False):
     try:
         _sab_request(
             url,
@@ -302,7 +327,7 @@ def _delete_job(url, api_key, nzo_id, timeout_seconds=15):
             timeout_seconds=timeout_seconds,
             name="delete",
             value=nzo_id,
-            del_files=0,
+            del_files=1 if delete_files else 0,
         )
     except Exception:
         return False

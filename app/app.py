@@ -23,7 +23,7 @@ from datetime import timedelta, datetime
 flask.cli.show_server_banner = lambda *args: None
 from app.constants import *
 from app.settings import *
-from app.downloads import ProwlarrClient, filter_results, test_download_client, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads, get_download_ui_visibility, filter_download_search_results
+from app.downloads import ProwlarrClient, filter_results, test_download_client, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads, get_download_ui_visibility, filter_download_search_results, remove_pending_download
 from app.library import organize_library, delete_older_updates, delete_duplicates, delete_library_content, delete_orphaned_addons
 from app.db import *
 from app.shop import *
@@ -4161,6 +4161,15 @@ def downloads_check_completed():
 def downloads_queue_state():
     state = get_downloads_state()
     return jsonify({'success': True, 'state': state})
+
+
+@app.post('/api/downloads/queue/delete')
+@access_required('admin')
+def downloads_queue_delete():
+    data = request.json or {}
+    ok, message = remove_pending_download(data.get('key'))
+    state = get_downloads_state()
+    return jsonify({'success': ok, 'message': message, 'state': state})
 
 
 @app.get('/api/downloads/active')

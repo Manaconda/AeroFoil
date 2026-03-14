@@ -5,7 +5,14 @@ from app.downloads.torrent_client import (
     remove_torrent,
     test_torrent_client,
 )
-from app.downloads.usenet_client import add_nzb, list_active as list_active_usenet, list_completed as list_completed_usenet, remove_history, test_sabnzbd
+from app.downloads.usenet_client import (
+    add_nzb,
+    list_active as list_active_usenet,
+    list_completed as list_completed_usenet,
+    remove_history,
+    remove_queue_item,
+    test_sabnzbd,
+)
 
 
 TORRENT_CLIENT_TYPES = {"qbittorrent", "transmission", "deluge"}
@@ -120,7 +127,7 @@ def list_completed_downloads(protocol, client_cfg, timeout_seconds=15):
     return []
 
 
-def remove_completed_download(protocol, client_cfg, item_id, timeout_seconds=15):
+def remove_completed_download(protocol, client_cfg, item_id, timeout_seconds=15, delete_files=False):
     protocol = str(protocol or "").strip().lower()
     client_type = str((client_cfg or {}).get("type") or "").strip().lower()
     if protocol == "torrent" or client_type in TORRENT_CLIENT_TYPES:
@@ -131,6 +138,7 @@ def remove_completed_download(protocol, client_cfg, item_id, timeout_seconds=15)
             password=(client_cfg or {}).get("password"),
             torrent_hash=item_id,
             timeout_seconds=timeout_seconds,
+            delete_files=delete_files,
         )
     if protocol == "usenet" or client_type in USENET_CLIENT_TYPES:
         return remove_history(
@@ -138,5 +146,30 @@ def remove_completed_download(protocol, client_cfg, item_id, timeout_seconds=15)
             api_key=(client_cfg or {}).get("api_key"),
             item_id=item_id,
             timeout_seconds=timeout_seconds,
+            delete_files=delete_files,
+        )
+    return False, "Unsupported download protocol."
+
+
+def remove_active_download(protocol, client_cfg, item_id, timeout_seconds=15, delete_files=False):
+    protocol = str(protocol or "").strip().lower()
+    client_type = str((client_cfg or {}).get("type") or "").strip().lower()
+    if protocol == "torrent" or client_type in TORRENT_CLIENT_TYPES:
+        return remove_torrent(
+            client_type=client_type,
+            url=(client_cfg or {}).get("url"),
+            username=(client_cfg or {}).get("username"),
+            password=(client_cfg or {}).get("password"),
+            torrent_hash=item_id,
+            timeout_seconds=timeout_seconds,
+            delete_files=delete_files,
+        )
+    if protocol == "usenet" or client_type in USENET_CLIENT_TYPES:
+        return remove_queue_item(
+            url=(client_cfg or {}).get("url"),
+            api_key=(client_cfg or {}).get("api_key"),
+            item_id=item_id,
+            timeout_seconds=timeout_seconds,
+            delete_files=delete_files,
         )
     return False, "Unsupported download protocol."

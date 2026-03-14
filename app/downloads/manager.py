@@ -5,9 +5,10 @@ import shutil
 import threading
 import time
 import unicodedata
+import json
 
 from app import titles as titles_lib
-from app.constants import ALLOWED_EXTENSIONS, APP_TYPE_UPD
+from app.constants import ALLOWED_EXTENSIONS, APP_TYPE_UPD, CACHE_DIR
 from app.db import get_all_title_apps, get_all_titles, get_libraries_path
 from app.downloads.client import (
     TORRENT_CLIENT_TYPES,
@@ -15,13 +16,17 @@ from app.downloads.client import (
     list_active_downloads,
     list_completed_downloads,
     queue_download,
+    remove_active_download,
     remove_completed_download,
 )
 from app.downloads.prowlarr import ProwlarrClient, filter_results, pick_best_result
 from app.library import _ensure_unique_path, _sanitize_component, enqueue_cleanup_roots, enqueue_organize_paths
 from app.settings import load_settings
+from app.utils import safe_write_json
 
 logger = logging.getLogger("downloads.manager")
+
+DOWNLOADS_STATE_FILE = os.path.join(CACHE_DIR, "downloads_state.json")
 
 _state_lock = threading.Lock()
 _state = {
@@ -30,6 +35,7 @@ _state = {
     "pending": {},  # key -> info
     "completed": set(),
 }
+_state_loaded = False
 
 
 def _get_prowlarr_timeout_seconds(prowlarr_cfg):
@@ -148,10 +154,174 @@ def _get_completed_poll_targets(downloads):
     return targets
 
 
+def _get_download_activity_snapshot(downloads):
+    active_by_protocol = {}
+    completed_by_protocol = {}
+    for protocol, client_cfg in _get_completed_poll_targets(downloads):
+        try:
+            active_items = list_active_downloads(protocol, client_cfg)
+        except Exception as exc:
+            logger.warning("Failed to load active %s downloads: %s", protocol, exc)
+            active_items = []
+        try:
+            completed_items = list_completed_downloads(protocol, client_cfg)
+        except Exception as exc:
+            logger.warning("Failed to load completed %s downloads: %s", protocol, exc)
+            completed_items = []
+        active_by_protocol[protocol] = {
+            "client_cfg": client_cfg,
+            "items": active_items,
+        }
+        completed_by_protocol[protocol] = {
+            "client_cfg": client_cfg,
+            "items": completed_items,
+        }
+    return {
+        "active_by_protocol": active_by_protocol,
+        "completed_by_protocol": completed_by_protocol,
+    }
+
+
+def _normalize_queue_state_label(status):
+    text = re.sub(r"\s+", " ", str(status or "").strip().lower())
+    if not text:
+        return "downloading"
+    if "download" in text:
+        return "downloading"
+    if "pause" in text:
+        return "paused"
+    if "queue" in text:
+        return "queued"
+    if "stall" in text:
+        return "stalled"
+    if "meta" in text or "check" in text:
+        return "preparing"
+    if "seed" in text or "upload" in text:
+        return "seeding"
+    return text
+
+
+def _update_pending_live_metadata(info, item=None, status=None):
+    if not isinstance(info, dict):
+        return
+    if item:
+        item_status = status if status is not None else item.get("status")
+        if item_status:
+            info["last_seen_status"] = str(item_status)
+        item_path = str(item.get("path") or "").strip()
+        if item_path:
+            info["last_seen_path"] = item_path
+    elif status:
+        info["last_seen_status"] = str(status)
+
+
+def _set_pending_stuck(info, reason, live_item=None):
+    if not isinstance(info, dict):
+        return
+    info["state"] = "stuck"
+    info["state_reason"] = str(reason or "waiting for action").strip() or "waiting for action"
+    _update_pending_live_metadata(info, item=live_item, status="stuck")
+
+
+def _clear_pending_stuck(info):
+    if not isinstance(info, dict):
+        return
+    if str(info.get("state") or "").strip().lower() == "stuck":
+        info["state"] = "queued"
+    info["state_reason"] = None
+
+
+def _serialize_downloads_state_locked():
+    pending = {}
+    for key, info in (_state.get("pending") or {}).items():
+        if not isinstance(info, dict):
+            continue
+        pending[str(key)] = dict(info)
+    completed = [
+        str(key) for key in sorted(_state.get("completed") or set())
+        if str(key or "").strip()
+    ]
+    return {
+        "pending": pending,
+        "completed": completed,
+    }
+
+
+def _persist_downloads_state_locked():
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        safe_write_json(DOWNLOADS_STATE_FILE, _serialize_downloads_state_locked())
+    except Exception as exc:
+        logger.warning("Failed to persist downloads state: %s", exc)
+
+
+def _persist_downloads_state():
+    _ensure_downloads_state_loaded()
+    with _state_lock:
+        _persist_downloads_state_locked()
+
+
+def _load_downloads_state_locked():
+    global _state_loaded
+    if _state_loaded:
+        return
+    _state_loaded = True
+    try:
+        with open(DOWNLOADS_STATE_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle) or {}
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        logger.warning("Failed to load persisted downloads state: %s", exc)
+        return
+
+    pending = {}
+    for key, info in (payload.get("pending") or {}).items():
+        if not isinstance(info, dict):
+            continue
+        pending[str(key)] = dict(info)
+
+    completed = set()
+    for key in payload.get("completed") or []:
+        text = str(key or "").strip()
+        if text:
+            completed.add(text)
+
+    _state["pending"] = pending
+    _state["completed"] = completed
+
+
+def _ensure_downloads_state_loaded():
+    with _state_lock:
+        _load_downloads_state_locked()
+
+
 def get_downloads_state():
+    _ensure_downloads_state_loaded()
+    settings = load_settings()
+    downloads = settings.get("downloads", {})
+    _restore_pending_from_active(downloads)
+    snapshot = _get_download_activity_snapshot(downloads)
     with _state_lock:
         pending_items = []
         for key, info in _state["pending"].items():
+            protocol = str(info.get("protocol") or "").strip().lower()
+            active_items = ((snapshot.get("active_by_protocol") or {}).get(protocol) or {}).get("items") or []
+            completed_items = ((snapshot.get("completed_by_protocol") or {}).get(protocol) or {}).get("items") or []
+            active_match = _match_completed_item(info, active_items)
+            completed_match = _match_completed_item(info, completed_items)
+            state = "queued"
+            state_reason = None
+            if active_match:
+                _clear_pending_stuck(info)
+                _update_pending_live_metadata(info, item=active_match)
+                state = _normalize_queue_state_label(active_match.get("status"))
+            elif str(info.get("state") or "").strip().lower() == "stuck":
+                state = "stuck"
+                state_reason = str(info.get("state_reason") or "").strip() or "waiting for action"
+            elif completed_match:
+                _update_pending_live_metadata(info, item=completed_match, status="completed")
+                state = "completed"
             expected_name = str(info.get("expected_name") or "").strip()
             pending_items.append({
                 "key": key,
@@ -163,6 +333,9 @@ def get_downloads_state():
                 "protocol": info.get("protocol"),
                 "client_type": info.get("client_type"),
                 "label": _format_pending_label(info),
+                "state": state,
+                "state_reason": state_reason,
+                "deletable": True,
             })
         return {
             "running": _state["running"],
@@ -191,6 +364,7 @@ def _format_pending_label(info):
 
 
 def run_downloads_job(scan_cb=None, post_cb=None):
+    _ensure_downloads_state_loaded()
     settings = load_settings()
     downloads = settings.get("downloads", {})
     if not downloads.get("enabled"):
@@ -220,6 +394,7 @@ def run_downloads_job(scan_cb=None, post_cb=None):
 
 
 def check_completed_downloads(scan_cb=None, post_cb=None):
+    _ensure_downloads_state_loaded()
     settings = load_settings()
     downloads = settings.get("downloads", {})
     if not _get_completed_poll_targets(downloads):
@@ -255,6 +430,120 @@ def get_active_downloads():
         return True, None, items, {"down_speed": down_speed}
     except Exception as e:
         return False, str(e), [], {"down_speed": 0}
+
+
+def _delete_download_payload(path):
+    target = str(path or "").strip()
+    if not target:
+        return True, None
+    if not os.path.exists(target):
+        return True, None
+    try:
+        if os.path.isdir(target):
+            shutil.rmtree(target)
+        else:
+            os.remove(target)
+    except Exception as exc:
+        return False, str(exc)
+    return (not os.path.exists(target)), None if not os.path.exists(target) else "path still exists after deletion"
+
+
+def remove_pending_download(key):
+    key = str(key or "").strip()
+    if not key:
+        return False, "Missing queue key."
+
+    _ensure_downloads_state_loaded()
+    settings = load_settings()
+    downloads = settings.get("downloads", {})
+    _restore_pending_from_active(downloads)
+    with _state_lock:
+        info = dict((_state.get("pending") or {}).get(key) or {})
+    if not info:
+        return False, "Queue item not found."
+
+    protocol = str(info.get("protocol") or "").strip().lower()
+    if not protocol:
+        with _state_lock:
+            live_info = _state["pending"].get(key)
+            if live_info:
+                _set_pending_stuck(live_info, "missing download protocol")
+        return False, "Queue item is missing a download protocol."
+
+    snapshot = _get_download_activity_snapshot(downloads)
+    active_bucket = ((snapshot.get("active_by_protocol") or {}).get(protocol) or {})
+    completed_bucket = ((snapshot.get("completed_by_protocol") or {}).get(protocol) or {})
+    active_match = _match_completed_item(info, active_bucket.get("items") or [])
+    completed_match = _match_completed_item(info, completed_bucket.get("items") or [])
+    live_match = active_match or completed_match
+    item_id = (
+        (live_match or {}).get("id")
+        or (live_match or {}).get("hash")
+        or info.get("id")
+        or info.get("hash")
+    )
+    candidate_paths = []
+    for candidate in [
+        (live_match or {}).get("path"),
+        info.get("last_seen_path"),
+    ]:
+        text = str(candidate or "").strip()
+        if text and text not in candidate_paths:
+            candidate_paths.append(text)
+
+    downloader_ok = False
+    downloader_message = None
+    if live_match or _is_protocol_client_configured(downloads, protocol):
+        client_cfg = (active_bucket.get("client_cfg") or completed_bucket.get("client_cfg") or _get_protocol_client_cfg(downloads, protocol))
+        if active_match and item_id:
+            downloader_ok, downloader_message = remove_active_download(
+                protocol,
+                client_cfg,
+                item_id,
+                delete_files=True,
+            )
+        elif completed_match and item_id:
+            downloader_ok, downloader_message = remove_completed_download(
+                protocol,
+                client_cfg,
+                item_id,
+                delete_files=True,
+            )
+        elif protocol == "torrent" and item_id:
+            downloader_ok, downloader_message = remove_active_download(
+                protocol,
+                client_cfg,
+                item_id,
+                delete_files=True,
+            )
+        else:
+            downloader_ok, downloader_message = True, "No matching downloader item found."
+    else:
+        downloader_message = "download client is not configured"
+
+    payload_ok = True
+    payload_failure = None
+    if downloader_ok:
+        for path in candidate_paths:
+            delete_ok, delete_message = _delete_download_payload(path)
+            if not delete_ok:
+                payload_ok = False
+                payload_failure = delete_message or f"failed to delete {path}"
+                break
+
+    if downloader_ok and payload_ok:
+        with _state_lock:
+            _state["pending"].pop(key, None)
+            _state["completed"].discard(key)
+            _persist_downloads_state_locked()
+        return True, "Removed queued download."
+
+    failure_reason = downloader_message if not downloader_ok else payload_failure
+    with _state_lock:
+        live_info = _state["pending"].get(key)
+        if live_info:
+            _set_pending_stuck(live_info, f"delete failed: {failure_reason or 'cleanup failed'}", live_item=live_match)
+    return False, f"Failed to remove queued download: {failure_reason or 'cleanup failed'}"
 
 
 def _process_downloads(downloads, scan_cb=None, post_cb=None):
@@ -622,28 +911,128 @@ def _get_missing_updates():
 
 
 def _already_tracked(key):
+    _ensure_downloads_state_loaded()
     with _state_lock:
         return key in _state["pending"] or key in _state["completed"]
 
 
+def _normalize_pending_item_id(item_id, protocol=None):
+    text = str(item_id or "").strip()
+    if not text:
+        return ""
+    if str(protocol or "").strip().lower() == "torrent":
+        return text.lower()
+    return text
+
+
+def _get_pending_identity(info):
+    protocol = str((info or {}).get("protocol") or "").strip().lower()
+    client_type = str((info or {}).get("client_type") or "").strip().lower()
+    item_id = _normalize_pending_item_id((info or {}).get("id") or (info or {}).get("hash"), protocol=protocol)
+    if item_id:
+        return protocol, client_type, item_id
+    expected_name = _normalize_match_text((info or {}).get("expected_name") or (info or {}).get("title_name"))
+    if expected_name:
+        return protocol, client_type, expected_name
+    return None
+
+
+def _build_restored_pending_key(item):
+    protocol = str((item or {}).get("protocol") or "").strip().lower() or "download"
+    client_type = str((item or {}).get("client_type") or "").strip().lower() or "client"
+    item_id = _normalize_pending_item_id((item or {}).get("id") or (item or {}).get("hash"), protocol=protocol)
+    if item_id:
+        return f"restored:{protocol}:{client_type}:{item_id}"
+    label = _normalize_match_text((item or {}).get("name")) or "unknown"
+    return f"restored:{protocol}:{client_type}:name:{label}"
+
+
+def _restore_pending_from_active(downloads):
+    _ensure_downloads_state_loaded()
+    poll_targets = _get_completed_poll_targets(downloads)
+    if not poll_targets:
+        return 0
+
+    active_items = []
+    for protocol, client_cfg in poll_targets:
+        try:
+            active_items.extend(list_active_downloads(protocol, client_cfg))
+        except Exception as exc:
+            logger.warning("Failed to restore pending %s queue state: %s", protocol, exc)
+
+    if not active_items:
+        return 0
+
+    restored = 0
+    with _state_lock:
+        known_identities = {
+            identity for identity in (_get_pending_identity(info) for info in _state["pending"].values())
+            if identity
+        }
+        for item in active_items:
+            identity = _get_pending_identity(item)
+            if identity and identity in known_identities:
+                continue
+            key = _build_restored_pending_key(item)
+            if key in _state["pending"] or key in _state["completed"]:
+                if identity:
+                    known_identities.add(identity)
+                continue
+            name = str(item.get("name") or "").strip()
+            protocol = str(item.get("protocol") or "").strip().lower() or None
+            client_type = str(item.get("client_type") or "").strip().lower() or None
+            normalized_id = _normalize_pending_item_id(item.get("id") or item.get("hash"), protocol=protocol)
+            _state["pending"][key] = {
+                "title_id": None,
+                "version": None,
+                "hash": normalized_id or None,
+                "id": normalized_id or None,
+                "expected_name": name or None,
+                "title_name": name or None,
+                "protocol": protocol,
+                "client_type": client_type,
+                "state": "queued",
+                "state_reason": None,
+                "last_seen_status": item.get("status") or None,
+                "last_seen_path": str(item.get("path") or "").strip() or None,
+            }
+            if identity:
+                known_identities.add(identity)
+            restored += 1
+        if restored:
+            _persist_downloads_state_locked()
+    return restored
+
+
 def _track_pending(key, update, item_id, expected_name=None, protocol=None, client_type=None):
+    _ensure_downloads_state_loaded()
+    normalized_id = _normalize_pending_item_id(item_id, protocol=protocol)
     with _state_lock:
         _state["pending"][key] = {
             "title_id": update["title_id"],
             "version": update["version"],
-            "hash": item_id,
-            "id": item_id,
+            "hash": normalized_id or None,
+            "id": normalized_id or None,
             "expected_name": expected_name or update.get("title_name"),
             "title_name": update.get("title_name"),
             "protocol": protocol,
             "client_type": client_type,
+            "state": "queued",
+            "state_reason": None,
+            "last_seen_status": None,
+            "last_seen_path": None,
         }
+        _persist_downloads_state_locked()
 
 
 def _match_completed_item(info, completed_items):
-    item_id = info.get("id") or info.get("hash")
+    protocol = str((info or {}).get("protocol") or "").strip().lower()
+    item_id = _normalize_pending_item_id((info or {}).get("id") or (info or {}).get("hash"), protocol=protocol)
     if item_id:
-        match = next((item for item in completed_items if (item.get("id") or item.get("hash")) == item_id), None)
+        match = next((
+            item for item in completed_items
+            if _normalize_pending_item_id(item.get("id") or item.get("hash"), protocol=protocol) == item_id
+        ), None)
         if match:
             return match
     expected = (info.get("expected_name") or "").lower()
@@ -669,7 +1058,7 @@ def _iter_completed_files(src_path):
             yield os.path.join(root, filename)
 
 
-def _select_completed_update_candidate(src_path):
+def _collect_completed_update_candidates(src_path):
     candidates = []
     for path in _iter_completed_files(src_path) or []:
         filename = os.path.basename(path)
@@ -681,13 +1070,34 @@ def _select_completed_update_candidate(src_path):
             size = os.path.getsize(path)
         except OSError:
             size = 0
-        rank = 0 if lowered.endswith(".nfo") else 1
-        candidates.append((rank, size, path, version))
+        is_importable = 1 if _is_importable_download_file(path) else 0
+        rank = 1 if is_importable and not lowered.endswith(".nfo") else 0
+        candidates.append((version, rank, size, path))
+    candidates.sort(reverse=True)
+    return candidates
+
+
+def _select_completed_update_candidate(src_path):
+    candidates = _collect_completed_update_candidates(src_path)
     if not candidates:
         return None, None
-    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    _, _, path, version = candidates[0]
+    version, _, _, path = candidates[0]
     return path, version
+
+
+def _get_highest_owned_update_version(title_id):
+    title_id = str(title_id or "").strip().upper()
+    if not title_id:
+        return 0
+    owned_updates = [
+        app for app in get_all_title_apps(title_id)
+        if app.get("app_type") == APP_TYPE_UPD and app.get("owned")
+    ]
+    owned_versions = [
+        int(app.get("app_version") or 0) for app in owned_updates
+        if app.get("app_version") is not None
+    ]
+    return max(owned_versions) if owned_versions else 0
 
 
 def _build_completed_match_text(item):
@@ -783,6 +1193,8 @@ def _looks_like_update_download(item):
 
 
 def _check_completed(downloads, scan_cb=None, post_cb=None):
+    _ensure_downloads_state_loaded()
+    _restore_pending_from_active(downloads)
     poll_targets = _get_completed_poll_targets(downloads)
     if not poll_targets:
         return
@@ -810,12 +1222,16 @@ def _check_completed(downloads, scan_cb=None, post_cb=None):
             match = _match_completed_item(info, bucket["items"])
             if not match:
                 continue
-            moved_match_paths = _coerce_moved_paths(_move_completed(match, info))
+            _update_pending_live_metadata(info, item=match, status="completed")
+            moved_result, move_reason = _move_completed_with_reason(match, info)
+            moved_match_paths = _coerce_moved_paths(moved_result)
             if not moved_match_paths:
                 logger.warning(
-                    "Matched completed download for pending key %s, but move failed. Keeping pending entry for retry.",
+                    "Matched completed download for pending key %s, but move failed. Keeping pending entry for retry: %s",
                     key,
+                    move_reason or "unknown error",
                 )
+                _set_pending_stuck(info, move_reason or "move failed", live_item=match)
                 continue
             matched_id = match.get("id") or match.get("hash")
             if matched_id:
@@ -828,6 +1244,7 @@ def _check_completed(downloads, scan_cb=None, post_cb=None):
                 if not ok:
                     logger.warning("Failed to remove completed %s item %s: %s", protocol, matched_id, message)
             newly_completed = True
+        _persist_downloads_state_locked()
 
         for protocol, bucket in completed_by_protocol.items():
             unmatched_count = 0
@@ -1030,16 +1447,16 @@ def _normalize_imported_wrapped_files(dest_path):
     return renamed_single_path
 
 
-def _move_completed(item, update_info=None):
+def _move_completed_with_reason(item, update_info=None):
     library_paths = get_libraries_path()
     if not library_paths:
         logger.warning("No library paths configured; cannot move download.")
-        return
+        return None, "no library paths configured"
     dest_root = library_paths[0]
     src_path = item.get("path")
     if not src_path or not os.path.exists(src_path):
         logger.warning("Completed download path not found: %s", src_path)
-        return
+        return None, "download path not found"
 
     if (
         update_info
@@ -1048,13 +1465,24 @@ def _move_completed(item, update_info=None):
         and str(update_info.get("title_id")).strip().lower() != "manual"
     ):
         title_id = update_info.get("title_id")
-        version = update_info.get("version")
+        requested_version = update_info.get("version")
         title_name = update_info.get("title_name") or update_info.get("expected_name")
-        update_path = _select_update_file_path(src_path, version)
-        if not update_path:
-            logger.warning("No update file found for %s v%s in %s", title_id, version, src_path)
-            return
-        dest_dir, dest_filename = _build_update_destination(dest_root, title_id, title_name, version, update_path)
+        update_path, actual_version = _select_completed_update_candidate(src_path)
+        if not update_path or not actual_version:
+            logger.warning("No update file found for %s v%s in %s", title_id, requested_version, src_path)
+            return None, "no update file found"
+        highest_owned = _get_highest_owned_update_version(title_id)
+        if actual_version <= highest_owned:
+            return None, f"downloaded v{actual_version} is not newer than owned v{highest_owned}"
+        if requested_version and int(actual_version) != int(requested_version):
+            logger.info(
+                "Importing completed update %s v%s although AeroFoil requested v%s because it upgrades owned v%s.",
+                title_id,
+                actual_version,
+                requested_version,
+                highest_owned,
+            )
+        dest_dir, dest_filename = _build_update_destination(dest_root, title_id, title_name, actual_version, update_path)
         dest_path = os.path.join(dest_dir, dest_filename)
         dest_path = _ensure_unique_path(dest_path)
         try:
@@ -1062,17 +1490,17 @@ def _move_completed(item, update_info=None):
             shutil.move(update_path, dest_path)
             logger.info("Moved update to library: %s", dest_path)
             _cleanup_download_path(src_path, dest_root)
-            return dest_path
+            return dest_path, None
         except Exception as e:
             logger.warning("Failed to move update %s: %s", update_path, e)
-            return None
+            return None, str(e)
 
     if os.path.abspath(os.path.dirname(src_path)) == os.path.abspath(dest_root):
-        return _normalize_imported_wrapped_files(src_path)
+        return _normalize_imported_wrapped_files(src_path), None
     importable_paths = _iter_importable_download_files(src_path)
     if not importable_paths:
         logger.warning("No importable files found in completed download: %s", src_path)
-        return None
+        return None, "no importable files found"
     moved_paths = []
     try:
         for import_path in importable_paths:
@@ -1082,7 +1510,12 @@ def _move_completed(item, update_info=None):
             moved_paths.append(dest_path)
         _cleanup_download_path(src_path, dest_root)
         logger.info("Moved download to library: %s", ", ".join(moved_paths))
-        return moved_paths[0] if len(moved_paths) == 1 else moved_paths
+        return (moved_paths[0] if len(moved_paths) == 1 else moved_paths), None
     except Exception as e:
         logger.warning("Failed to move download %s: %s", src_path, e)
-        return None
+        return None, str(e)
+
+
+def _move_completed(item, update_info=None):
+    moved_result, _ = _move_completed_with_reason(item, update_info=update_info)
+    return moved_result
