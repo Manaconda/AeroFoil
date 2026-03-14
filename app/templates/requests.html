@@ -27,6 +27,24 @@
         <div class="card bg-dark text-light mb-3">
           <div class="card-body">
       {% if current_user.is_admin or admin_account_created == false %}
+      <div class="row g-3 mb-3">
+        <div class="col-12">
+          <div class="border rounded p-3 h-100">
+            <div class="fw-semibold">Add request from TitleDB</div>
+            <div class="text-muted small mb-2">Search TitleDB and add a request for a title that is not already in the library.</div>
+            <input type="text" class="form-control" id="adminRequestSearchBox" name="admin-request-search" list="adminRequestSearchSuggestions" placeholder="Search by name or title id (e.g. Mario, 0100...)" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false">
+            <datalist id="adminRequestSearchSuggestions"></datalist>
+            <div class="list-group mt-2" id="adminRequestSearchResults"></div>
+            <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
+              <div class="small text-muted flex-grow-1" id="adminSelectedTitleText">Selected: None</div>
+              <button class="btn btn-warning btn-sm align-self-start" id="adminSubmitRequestBtn">
+                <i class="bi bi-plus-circle"></i> Add request
+              </button>
+            </div>
+            <div class="text-muted small mt-2" id="adminRequestSubmitStatus"></div>
+          </div>
+        </div>
+      </div>
       <div class="d-flex flex-column flex-lg-row gap-2 align-items-lg-center">
         <div class="flex-grow-1">
           <input type="text" class="form-control" id="adminSearchBox" placeholder="Filter by title id, name, user...">
@@ -170,7 +188,10 @@
   }
 
   let selectedTitle = null;
+  let adminSelectedTitle = null;
   let adminRequests = [];
+  let adminRequestSearchTimer = null;
+  let adminRequestSuggestions = new Map();
 
   async function apiGet(url) {
     const resp = await fetch(url, { credentials: 'same-origin' });
@@ -187,8 +208,61 @@
     return await resp.json();
   }
 
-  function renderUserSearchResults(results) {
-    const box = document.getElementById('requestSearchResults');
+  async function fetchSearchResults(query) {
+    const data = await apiGet(`/api/titledb/search?q=${encodeURIComponent(query)}&limit=25`);
+    if (!data || data.success !== true) {
+      return [];
+    }
+    const results = Array.isArray(data.results) ? data.results : [];
+    return results.filter(r => r && r.in_library !== true);
+  }
+
+  function buildTitleSuggestionLabel(item) {
+    const titleId = String(item?.id || '').trim().toUpperCase();
+    const titleName = String(item?.name || 'Unrecognized').trim() || 'Unrecognized';
+    return titleId ? `${titleName} (${titleId})` : titleName;
+  }
+
+  function updateAdminSearchSuggestions(results) {
+    const datalist = document.getElementById('adminRequestSearchSuggestions');
+    adminRequestSuggestions = new Map();
+    if (!datalist) return;
+    datalist.innerHTML = '';
+
+    const filteredResults = (results || []).filter(item => item && item.in_library !== true);
+    filteredResults.forEach(item => {
+      const titleId = String(item?.id || '').trim().toUpperCase();
+      const label = buildTitleSuggestionLabel(item);
+      [label, titleId].forEach(value => {
+        const normalizedValue = String(value || '').trim();
+        if (!normalizedValue || adminRequestSuggestions.has(normalizedValue)) return;
+        adminRequestSuggestions.set(normalizedValue, item);
+        const option = document.createElement('option');
+        option.value = normalizedValue;
+        datalist.appendChild(option);
+      });
+    });
+  }
+
+  function selectAdminTitle(item) {
+    adminSelectedTitle = item || null;
+    document.getElementById('adminSelectedTitleText').textContent = `Selected: ${item?.name || 'Unrecognized'} (${item?.id || ''})`;
+    document.getElementById('adminRequestSubmitStatus').textContent = '';
+    document.getElementById('adminRequestSearchBox').value = buildTitleSuggestionLabel(item);
+    document.getElementById('adminSubmitRequestBtn').disabled = !adminSelectedTitle;
+  }
+
+  function handleAdminSearchSelection() {
+    const query = String(document.getElementById('adminRequestSearchBox')?.value || '').trim();
+    if (!query) return;
+    const match = adminRequestSuggestions.get(query);
+    if (!match) return;
+    selectAdminTitle(match);
+    document.getElementById('adminRequestSearchResults').innerHTML = '';
+  }
+
+  function renderTitleSearchResults(boxId, results, onSelect) {
+    const box = document.getElementById(boxId);
     box.innerHTML = '';
     if (!results || !results.length) return;
     results.forEach(item => {
@@ -207,12 +281,8 @@
       `;
       a.addEventListener('click', () => {
         if (disabled) return;
-        selectedTitle = item;
-        document.getElementById('selectedTitleText').textContent = `${item.name || 'Unrecognized'} (${item.id})`;
-        document.getElementById('submitRequestBtn').disabled = false;
-        document.getElementById('requestSubmitStatus').textContent = '';
+        onSelect(item);
         box.innerHTML = '';
-        document.getElementById('requestSearchBox').value = `${item.name || ''}`.trim();
       });
       box.appendChild(a);
     });
@@ -224,17 +294,34 @@
     if (searchTimer) clearTimeout(searchTimer);
     searchTimer = setTimeout(async () => {
       if (!q) {
-        renderUserSearchResults([]);
+        renderTitleSearchResults('requestSearchResults', [], () => {});
         return;
       }
-      const data = await apiGet(`/api/titledb/search?q=${encodeURIComponent(q)}&limit=25`);
-      if (!data || data.success !== true) {
-        renderUserSearchResults([]);
+      const results = await fetchSearchResults(q);
+      renderTitleSearchResults('requestSearchResults', results, item => {
+        selectedTitle = item;
+        document.getElementById('selectedTitleText').textContent = `${item.name || 'Unrecognized'} (${item.id})`;
+        document.getElementById('submitRequestBtn').disabled = false;
+        document.getElementById('requestSubmitStatus').textContent = '';
+        document.getElementById('requestSearchBox').value = `${item.name || ''}`.trim();
+      });
+    }, 250);
+  }
+
+  async function handleAdminSearchInput() {
+    const q = (document.getElementById('adminRequestSearchBox').value || '').trim();
+    if (adminRequestSearchTimer) clearTimeout(adminRequestSearchTimer);
+    adminRequestSearchTimer = setTimeout(async () => {
+      if (!q) {
+        updateAdminSearchSuggestions([]);
+        renderTitleSearchResults('adminRequestSearchResults', [], () => {});
         return;
       }
-      const results = Array.isArray(data.results) ? data.results : [];
-      // Hide titles already present in the library.
-      renderUserSearchResults(results.filter(r => r && r.in_library !== true));
+      const results = await fetchSearchResults(q);
+      updateAdminSearchSuggestions(results);
+      renderTitleSearchResults('adminRequestSearchResults', results, item => {
+        selectAdminTitle(item);
+      });
     }, 250);
   }
 
@@ -253,6 +340,38 @@
       document.getElementById('selectedTitleText').textContent = 'None';
     } else {
       status.textContent = (data && data.message) ? data.message : 'Request failed.';
+    }
+  }
+
+  async function submitAdminRequest() {
+    const status = document.getElementById('adminRequestSubmitStatus');
+    const button = document.getElementById('adminSubmitRequestBtn');
+
+    if (!adminSelectedTitle || !adminSelectedTitle.id) {
+      status.textContent = 'Select a title from TitleDB first.';
+      return;
+    }
+
+    button.setAttribute('disabled', 'true');
+    status.textContent = 'Submitting...';
+    try {
+      const data = await apiPost('/api/requests', {
+        title_id: String(adminSelectedTitle.id || '').trim().toUpperCase(),
+        title_name: String(adminSelectedTitle.name || '').trim(),
+      });
+      if (data && data.success) {
+        adminSelectedTitle = null;
+        document.getElementById('adminRequestSearchBox').value = '';
+        document.getElementById('adminRequestSearchResults').innerHTML = '';
+        document.getElementById('adminSelectedTitleText').textContent = 'Selected: None';
+        document.getElementById('adminSubmitRequestBtn').disabled = true;
+        status.textContent = data.message || 'Request created.';
+        await refreshAdminRequests();
+      } else {
+        status.textContent = (data && data.message) ? data.message : 'Request failed.';
+      }
+    } finally {
+      button.removeAttribute('disabled');
     }
   }
 
@@ -404,6 +523,10 @@
     document.getElementById('submitRequestBtn')?.addEventListener('click', submitRequest);
   } else {
     document.getElementById('refreshRequestsBtn')?.addEventListener('click', refreshAdminRequests);
+    document.getElementById('adminRequestSearchBox')?.addEventListener('input', handleAdminSearchInput);
+    document.getElementById('adminRequestSearchBox')?.addEventListener('change', handleAdminSearchSelection);
+    document.getElementById('adminSubmitRequestBtn')?.addEventListener('click', submitAdminRequest);
+    document.getElementById('adminSubmitRequestBtn')?.setAttribute('disabled', 'true');
     document.getElementById('adminSearchBox')?.addEventListener('input', renderAdminRequestsTable);
     refreshAdminRequests();
   }
