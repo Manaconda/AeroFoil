@@ -103,6 +103,39 @@ def _safe_int(value, default=0):
     except (TypeError, ValueError):
         return default
 
+
+def _app_has_deletable_files(app):
+    if app is None or getattr(app, 'id', None) is None:
+        return False
+
+    for file_entry in list(getattr(app, 'files', []) or []):
+        if file_entry is None:
+            continue
+        filepath = str(getattr(file_entry, 'filepath', '') or '').strip()
+        if not filepath:
+            continue
+        linked_apps = [linked for linked in list(getattr(file_entry, 'apps', []) or []) if linked is not None]
+        foreign_apps = [linked for linked in linked_apps if getattr(linked, 'id', None) != getattr(app, 'id', None)]
+        if not foreign_apps:
+            return True
+    return False
+
+
+def _build_deletable_version_map(apps):
+    deletable = {}
+    for app in apps or []:
+        key = (
+            str(getattr(app, 'app_id', '') or '').strip().upper(),
+            str(getattr(app, 'app_type', '') or '').strip().upper(),
+            str(getattr(app, 'app_version', '') or '').strip(),
+        )
+        if not all(key):
+            continue
+        deletable[key] = bool(deletable.get(key)) or (
+            bool(getattr(app, 'owned', False)) and _app_has_deletable_files(app)
+        )
+    return deletable
+
 def _media_variant_dirname(media_kind, size_override=None):
     if media_kind == 'icon':
         size = size_override or _ICON_SIZE
@@ -4127,7 +4160,7 @@ def manage_delete_library_content():
         version=version,
     )
     if not dry_run and results.get('mutated'):
-        _run_post_library_change()
+        post_library_change()
     status_code = 200 if results.get('success') else 400
     return jsonify(results), status_code
 
@@ -5482,6 +5515,7 @@ def get_title_details_api():
             owned_update_count = sum(1 for app in title_apps if app.app_type == APP_TYPE_UPD and bool(app.owned))
             owned_dlc_count = sum(1 for app in title_apps if app.app_type == APP_TYPE_DLC and bool(app.owned))
             has_base = owned_base_count > 0
+            deletable_versions = _build_deletable_version_map(title_apps)
             available_update_versions = [_safe_int(app.app_version) for app in title_apps if app.app_type == APP_TYPE_UPD]
             owned_update_versions = [_safe_int(app.app_version) for app in title_apps if app.app_type == APP_TYPE_UPD and bool(app.owned)]
             highest_available_update_version = max(available_update_versions, default=0)
@@ -5539,7 +5573,10 @@ def get_title_details_api():
                         'app_type': APP_TYPE_UPD,
                         'version': int(upd.app_version or 0),
                         'owned': bool(upd.owned),
-                        'deletable': bool(upd.owned),
+                        'deletable': deletable_versions.get(
+                            (str(upd.app_id or '').strip().upper(), APP_TYPE_UPD, str(upd.app_version or '').strip()),
+                            False,
+                        ),
                         'size': int(upd.size or 0),
                         'release_date': 'Unknown',
                     })
@@ -5634,7 +5671,10 @@ def get_title_details_api():
                         'app_type': APP_TYPE_DLC,
                         'version': int(dlc.app_version or 0),
                         'owned': bool(dlc.owned),
-                        'deletable': bool(dlc.owned),
+                        'deletable': deletable_versions.get(
+                            (str(dlc.app_id or '').strip().upper(), APP_TYPE_DLC, str(dlc.app_version or '').strip()),
+                            False,
+                        ),
                         'size': int(dlc.size or 0),
                         'release_date': 'Unknown',
                     })

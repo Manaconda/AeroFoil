@@ -11,7 +11,10 @@ _IMPORT_ERROR = None
 flask_app = None
 try:
     from app.app import app as flask_app
+    from app.app import _app_has_deletable_files
+    from app.app import _build_deletable_version_map
     from app.app import _sort_library_rows_by_title_name
+    from app.app import manage_delete_library_content
     from app.library import (
         _build_staging_output_path,
         _cleanup_import_staging_roots,
@@ -114,7 +117,7 @@ class LibraryHelperTests(unittest.TestCase):
     def test_build_staging_output_path_uses_staging_root(self):
         source = '/library/Game.nsp'
         output = '/library/Game.nsz'
-        staging = '/tmp/aerofoil-stage'
+        staging = os.path.join(TEST_TMP_ROOT, 'aerofoil-stage')
         staged_output = _build_staging_output_path(source, output, staging)
         self.assertTrue(staged_output.startswith(staging + os.sep))
         self.assertEqual(os.path.basename(staged_output), 'Game.nsz')
@@ -375,6 +378,57 @@ class LibraryHelperTests(unittest.TestCase):
         self.assertFalse(result["mutated"])
         remove_mock.assert_not_called()
         delete_file_mock.assert_not_called()
+
+    def test_app_has_deletable_files_rejects_shared_only_files(self):
+        target_app = self._make_app(1, "0100EEEE", "UPDATE", 1)
+        foreign_app = self._make_app(2, "0100FFFF", "BASE", 0)
+        target_app.files = [self._make_file(105, "X:\\library\\shared.xci", [target_app, foreign_app])]
+
+        self.assertFalse(_app_has_deletable_files(target_app))
+
+    def test_build_deletable_version_map_marks_only_exclusive_owned_versions(self):
+        exclusive_app = self._make_app(1, "0100AAAA", "UPDATE", 3)
+        exclusive_app.owned = True
+        exclusive_app.files = [self._make_file(201, "X:\\library\\owned.nsp", [exclusive_app])]
+        shared_app = self._make_app(2, "0100BBBB", "DLC", 1)
+        shared_app.owned = True
+        foreign_app = self._make_app(3, "0100CCCC", "BASE", 0)
+        shared_app.files = [self._make_file(202, "X:\\library\\shared.xci", [shared_app, foreign_app])]
+
+        deletable = _build_deletable_version_map([exclusive_app, shared_app])
+
+        self.assertTrue(deletable[("0100AAAA", "UPDATE", "3")])
+        self.assertFalse(deletable[("0100BBBB", "DLC", "1")])
+
+    @patch("app.app._run_post_library_change")
+    @patch("app.app.post_library_change")
+    @patch("app.app.delete_library_content")
+    def test_manage_delete_library_content_uses_async_post_change(
+        self,
+        delete_content_mock,
+        post_library_change_mock,
+        run_post_library_change_mock,
+    ):
+        delete_content_mock.return_value = {
+            "success": True,
+            "deleted": 1,
+            "skipped": 0,
+            "mutated": True,
+            "errors": [],
+            "details": [],
+        }
+
+        with flask_app.test_request_context(
+            "/api/manage/delete-library-content",
+            method="POST",
+            json={"scope": "title_cascade", "title_id": "0100AAAA00000000"},
+        ):
+            response, status_code = manage_delete_library_content.__wrapped__()
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(response.get_json()["success"])
+        post_library_change_mock.assert_called_once_with()
+        run_post_library_change_mock.assert_not_called()
 
 
 if __name__ == '__main__':

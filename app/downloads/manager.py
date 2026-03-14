@@ -5,10 +5,9 @@ import shutil
 import threading
 import time
 import unicodedata
-import json
 
 from app import titles as titles_lib
-from app.constants import ALLOWED_EXTENSIONS, APP_TYPE_UPD, CACHE_DIR
+from app.constants import ALLOWED_EXTENSIONS, APP_TYPE_UPD
 from app.db import get_all_title_apps, get_all_titles, get_libraries_path
 from app.downloads.client import (
     TORRENT_CLIENT_TYPES,
@@ -22,11 +21,8 @@ from app.downloads.client import (
 from app.downloads.prowlarr import ProwlarrClient, filter_results, pick_best_result
 from app.library import _ensure_unique_path, _sanitize_component, enqueue_cleanup_roots, enqueue_organize_paths
 from app.settings import load_settings
-from app.utils import safe_write_json
 
 logger = logging.getLogger("downloads.manager")
-
-DOWNLOADS_STATE_FILE = os.path.join(CACHE_DIR, "downloads_state.json")
 
 _state_lock = threading.Lock()
 _state = {
@@ -157,17 +153,21 @@ def _get_completed_poll_targets(downloads):
 def _get_download_activity_snapshot(downloads):
     active_by_protocol = {}
     completed_by_protocol = {}
+    errors_by_protocol = {}
     for protocol, client_cfg in _get_completed_poll_targets(downloads):
+        protocol_errors = []
         try:
             active_items = list_active_downloads(protocol, client_cfg)
         except Exception as exc:
             logger.warning("Failed to load active %s downloads: %s", protocol, exc)
             active_items = []
+            protocol_errors.append(f"active: {exc}")
         try:
             completed_items = list_completed_downloads(protocol, client_cfg)
         except Exception as exc:
             logger.warning("Failed to load completed %s downloads: %s", protocol, exc)
             completed_items = []
+            protocol_errors.append(f"completed: {exc}")
         active_by_protocol[protocol] = {
             "client_cfg": client_cfg,
             "items": active_items,
@@ -176,9 +176,12 @@ def _get_download_activity_snapshot(downloads):
             "client_cfg": client_cfg,
             "items": completed_items,
         }
+        if protocol_errors:
+            errors_by_protocol[protocol] = protocol_errors
     return {
         "active_by_protocol": active_by_protocol,
         "completed_by_protocol": completed_by_protocol,
+        "errors_by_protocol": errors_by_protocol,
     }
 
 
@@ -232,47 +235,15 @@ def _clear_pending_stuck(info):
 
 
 def _serialize_downloads_state_locked():
-    pending = {}
-    for key, info in (_state.get("pending") or {}).items():
-        if not isinstance(info, dict):
-            continue
-        pending[str(key)] = dict(info)
-    completed = [
-        str(key) for key in sorted(_state.get("completed") or set())
-        if str(key or "").strip()
-    ]
-    return {
-        "pending": pending,
-        "completed": completed,
-    }
+    return {}
 
 
 def _persist_downloads_state_locked():
-    payload = _serialize_downloads_state_locked()
-    try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        for attempt in range(3):
-            try:
-                safe_write_json(DOWNLOADS_STATE_FILE, payload)
-                return
-            except PermissionError:
-                if attempt >= 2:
-                    raise
-                time.sleep(0.05 * (attempt + 1))
-        return
-    except Exception as exc:
-        try:
-            with open(DOWNLOADS_STATE_FILE, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, ensure_ascii=False, indent=2)
-            return
-        except Exception as fallback_exc:
-            logger.warning("Failed to persist downloads state: %s", fallback_exc or exc)
+    return
 
 
 def _persist_downloads_state():
-    _ensure_downloads_state_loaded()
-    with _state_lock:
-        _persist_downloads_state_locked()
+    return
 
 
 def _load_downloads_state_locked():
@@ -280,29 +251,7 @@ def _load_downloads_state_locked():
     if _state_loaded:
         return
     _state_loaded = True
-    try:
-        with open(DOWNLOADS_STATE_FILE, "r", encoding="utf-8") as handle:
-            payload = json.load(handle) or {}
-    except FileNotFoundError:
-        return
-    except Exception as exc:
-        logger.warning("Failed to load persisted downloads state: %s", exc)
-        return
-
-    pending = {}
-    for key, info in (payload.get("pending") or {}).items():
-        if not isinstance(info, dict):
-            continue
-        pending[str(key)] = dict(info)
-
-    completed = set()
-    for key in payload.get("completed") or []:
-        text = str(key or "").strip()
-        if text:
-            completed.add(text)
-
-    _state["pending"] = pending
-    _state["completed"] = completed
+    return
 
 
 def _ensure_downloads_state_loaded():
@@ -499,6 +448,7 @@ def remove_pending_download(key):
     snapshot = _get_download_activity_snapshot(downloads)
     active_bucket = ((snapshot.get("active_by_protocol") or {}).get(protocol) or {})
     completed_bucket = ((snapshot.get("completed_by_protocol") or {}).get(protocol) or {})
+    protocol_errors = ((snapshot.get("errors_by_protocol") or {}).get(protocol) or [])
     active_match = _match_completed_item(info, active_bucket.get("items") or [])
     completed_match = _match_completed_item(info, completed_bucket.get("items") or [])
     live_match = active_match or completed_match
@@ -518,6 +468,13 @@ def remove_pending_download(key):
             candidate_paths.append(text)
 
     if not live_match:
+        if protocol_errors and _is_protocol_client_configured(downloads, protocol):
+            failure_reason = "could not verify downloader state"
+            with _state_lock:
+                live_info = _state["pending"].get(key)
+                if live_info:
+                    _set_pending_stuck(live_info, f"delete failed: {failure_reason}")
+            return False, f"Failed to remove queued download: {failure_reason}"
         payload_ok = True
         payload_failure = None
         for path in candidate_paths:

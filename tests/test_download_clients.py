@@ -1138,77 +1138,6 @@ class CompletedAdoptionTests(unittest.TestCase):
     @patch("app.downloads.manager.enqueue_cleanup_roots")
     @patch("app.downloads.manager.remove_completed_download", return_value=(True, "ok"))
     @patch("app.downloads.manager._move_completed_with_reason", return_value=("X:\\fixture-root\\Example Title [0100]\\Updates\\v1245184\\Example Title.nsp", None))
-    @patch("app.downloads.manager.list_active_downloads", return_value=[])
-    @patch("app.downloads.manager.list_completed_downloads")
-    @patch("app.downloads.manager._get_completed_poll_targets")
-    def test_check_completed_uses_persisted_pending_state_after_restart(
-        self,
-        poll_targets_mock,
-        list_completed_mock,
-        list_active_mock,
-        move_completed_with_reason_mock,
-        remove_completed_mock,
-        enqueue_cleanup_roots_mock,
-        enqueue_paths_mock,
-    ):
-        tmpdir = os.path.join(".tmp", "downloads_state_persisted")
-        os.makedirs(tmpdir, exist_ok=True)
-        state_file = os.path.join(tmpdir, "downloads_state.json")
-        with open(state_file, "w", encoding="utf-8") as handle:
-            json.dump({
-                "pending": {
-                    "update:0100B6E012EBE000:1245184": {
-                        "title_id": "0100B6E012EBE000",
-                        "version": 1245184,
-                        "hash": "SABnzbd_nzo_2goo76g2",
-                        "id": "SABnzbd_nzo_2goo76g2",
-                        "expected_name": "Example Title Update v1.1.10 TEST-GRP",
-                        "title_name": "Example Title",
-                        "protocol": "usenet",
-                        "client_type": "sabnzbd",
-                        "state": "queued",
-                        "state_reason": None,
-                        "last_seen_status": None,
-                        "last_seen_path": None,
-                    }
-                },
-                "completed": [],
-            }, handle)
-
-        poll_targets_mock.return_value = [("usenet", {"type": "sabnzbd", "category": "aerofoil"})]
-        list_completed_mock.return_value = [{
-            "id": "SABnzbd_nzo_2goo76g2",
-            "hash": "SABnzbd_nzo_2goo76g2",
-            "protocol": "usenet",
-            "client_type": "sabnzbd",
-            "name": "Example Title Update v1.1.10 TEST-GRP",
-            "path": "X:\\fixture-root\\incoming\\Example Title Update v1.1.10 TEST-GRP",
-        }]
-
-        with patch("app.downloads.manager.CACHE_DIR", tmpdir), \
-            patch("app.downloads.manager.DOWNLOADS_STATE_FILE", state_file), \
-            patch("app.downloads.manager._state", {
-                "running": False,
-                "last_run": 0.0,
-                "pending": {},
-                "completed": set(),
-            }), \
-            patch("app.downloads.manager._state_loaded", False):
-            _check_completed({})
-
-        move_completed_with_reason_mock.assert_called_once()
-        moved_item, moved_info = move_completed_with_reason_mock.call_args.args
-        self.assertEqual(moved_item["id"], "SABnzbd_nzo_2goo76g2")
-        self.assertEqual(moved_info["title_id"], "0100B6E012EBE000")
-        self.assertEqual(moved_info["version"], 1245184)
-        remove_completed_mock.assert_called_once_with("usenet", {"type": "sabnzbd", "category": "aerofoil"}, "SABnzbd_nzo_2goo76g2")
-        enqueue_paths_mock.assert_called_once_with(["X:\\fixture-root\\Example Title [0100]\\Updates\\v1245184\\Example Title.nsp"])
-        enqueue_cleanup_roots_mock.assert_called_once_with([])
-
-    @patch("app.downloads.manager.enqueue_organize_paths")
-    @patch("app.downloads.manager.enqueue_cleanup_roots")
-    @patch("app.downloads.manager.remove_completed_download", return_value=(True, "ok"))
-    @patch("app.downloads.manager._move_completed_with_reason", return_value=("X:\\fixture-root\\Example Title [0100]\\Updates\\v1245184\\Example Title.nsp", None))
     @patch("app.downloads.manager._infer_update_info_from_completed_item")
     @patch("app.downloads.manager.list_active_downloads", return_value=[])
     @patch("app.downloads.manager.list_completed_downloads")
@@ -1669,6 +1598,67 @@ class ManagedCompletionStateTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(message, "Removed stale queue entry.")
         self.assertEqual(downloads_manager._state["pending"], {})
+
+    @patch("app.downloads.manager._delete_download_payload")
+    @patch("app.downloads.manager._get_download_activity_snapshot")
+    @patch("app.downloads.manager._restore_pending_from_active")
+    @patch("app.downloads.manager.load_settings", return_value={
+        "downloads": {
+            "torrent_client": {
+                "type": "qbittorrent",
+                "url": "http://torrent.local",
+            }
+        }
+    })
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 0.0,
+        "pending": {
+            "manual:2": {
+                "title_id": None,
+                "version": None,
+                "hash": "abc123",
+                "id": "abc123",
+                "expected_name": "Game",
+                "title_name": "Game",
+                "protocol": "torrent",
+                "client_type": "qbittorrent",
+                "state": "queued",
+                "state_reason": None,
+                "last_seen_status": None,
+                "last_seen_path": "C:\\tests\\completed\\Game",
+            }
+        },
+        "completed": set(),
+    })
+    def test_remove_pending_download_keeps_item_when_snapshot_has_errors(
+        self,
+        _state_lock_mock,
+        load_settings_mock,
+        restore_pending_mock,
+        snapshot_mock,
+        delete_payload_mock,
+    ):
+        snapshot_mock.return_value = {
+            "active_by_protocol": {"torrent": {"client_cfg": {"type": "qbittorrent"}, "items": []}},
+            "completed_by_protocol": {"torrent": {"client_cfg": {"type": "qbittorrent"}, "items": []}},
+            "errors_by_protocol": {"torrent": ["active: timeout"]},
+        }
+
+        ok, message = remove_pending_download("manual:2")
+
+        self.assertFalse(ok)
+        self.assertEqual(
+            message,
+            "Failed to remove queued download: could not verify downloader state",
+        )
+        self.assertEqual(downloads_manager._state["pending"]["manual:2"]["state"], "stuck")
+        self.assertEqual(
+            downloads_manager._state["pending"]["manual:2"]["state_reason"],
+            "delete failed: could not verify downloader state",
+        )
+        delete_payload_mock.assert_not_called()
 
 
 if __name__ == "__main__":
