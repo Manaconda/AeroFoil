@@ -26,24 +26,23 @@
 
         <div class="card bg-dark text-light mb-3">
           <div class="card-body">
-      {% if current_user.is_admin or admin_account_created == false %}
       <div class="row g-3 mb-3">
-        <div class="col-12">
-          <div class="border rounded p-3 h-100">
-            <div class="fw-semibold">Add request from TitleDB</div>
-            <div class="text-muted small mb-2">Search TitleDB and add a request for a title that is not already in the library.</div>
-            <input type="text" class="form-control" id="adminRequestSearchBox" placeholder="Search by name or title id (e.g. Mario, 0100...)" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly>
-            <div class="list-group mt-2" id="adminRequestSearchResults"></div>
-            <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
-              <div class="small text-muted flex-grow-1" id="adminSelectedTitleText">Selected: None</div>
-              <button class="btn btn-warning btn-sm align-self-start" id="adminSubmitRequestBtn">
-                <i class="bi bi-plus-circle"></i> Add request
-              </button>
-            </div>
-            <div class="text-muted small mt-2" id="adminRequestSubmitStatus"></div>
+        <div class="col-12 col-lg-8">
+          <input type="text" class="form-control" id="requestSearchBox" placeholder="Search by name or title id (e.g. Mario, 0100...)" autocomplete="off">
+          <div class="list-group mt-2" id="requestSearchResults"></div>
+        </div>
+        <div class="col-12 col-lg-4">
+          <div class="border rounded p-3">
+            <div class="fw-semibold">Selected</div>
+            <div class="text-muted small" id="selectedTitleText">None</div>
+            <button class="btn btn-warning btn-sm mt-3" id="submitRequestBtn" disabled>
+              <i class="bi bi-send"></i> Submit request
+            </button>
+            <div class="text-muted small mt-2" id="requestSubmitStatus"></div>
           </div>
         </div>
       </div>
+      {% if current_user.is_admin or admin_account_created == false %}
       <div class="d-flex flex-column flex-lg-row gap-2 align-items-lg-center">
         <div class="flex-grow-1">
           <input type="text" class="form-control" id="adminSearchBox" placeholder="Filter by title id, name, user...">
@@ -65,22 +64,6 @@
       </div>
       <div class="text-muted small mt-2" id="requestsStatus"></div>
       {% else %}
-      <div class="row g-2">
-        <div class="col-12 col-lg-8">
-          <input type="text" class="form-control" id="requestSearchBox" placeholder="Search by name or title id (e.g. Mario, 0100...)" autocomplete="off">
-          <div class="list-group mt-2" id="requestSearchResults"></div>
-        </div>
-        <div class="col-12 col-lg-4">
-          <div class="border rounded p-3">
-            <div class="fw-semibold">Selected</div>
-            <div class="text-muted small" id="selectedTitleText">None</div>
-            <button class="btn btn-warning btn-sm mt-3" id="submitRequestBtn" disabled>
-              <i class="bi bi-send"></i> Submit request
-            </button>
-            <div class="text-muted small mt-2" id="requestSubmitStatus"></div>
-          </div>
-        </div>
-      </div>
       {% endif %}
     </div>
   </div>
@@ -187,9 +170,7 @@
   }
 
   let selectedTitle = null;
-  let adminSelectedTitle = null;
   let adminRequests = [];
-  let adminRequestSearchTimer = null;
 
   async function apiGet(url) {
     const resp = await fetch(url, { credentials: 'same-origin' });
@@ -213,26 +194,6 @@
     }
     const results = Array.isArray(data.results) ? data.results : [];
     return results.filter(r => r && r.in_library !== true);
-  }
-
-  function selectAdminTitle(item) {
-    adminSelectedTitle = item || null;
-    document.getElementById('adminSelectedTitleText').textContent = `Selected: ${item?.name || 'Unrecognized'} (${item?.id || ''})`;
-    document.getElementById('adminRequestSubmitStatus').textContent = '';
-    document.getElementById('adminRequestSearchBox').value = `${item?.name || ''}`.trim();
-    document.getElementById('adminSubmitRequestBtn').disabled = !adminSelectedTitle;
-  }
-
-  function unlockAdminSearchInput() {
-    const input = document.getElementById('adminRequestSearchBox');
-    if (!input) return;
-    input.removeAttribute('readonly');
-  }
-
-  function lockAdminSearchInput() {
-    const input = document.getElementById('adminRequestSearchBox');
-    if (!input) return;
-    input.setAttribute('readonly', 'true');
   }
 
   function renderTitleSearchResults(boxId, results, onSelect) {
@@ -282,21 +243,6 @@
     }, 250);
   }
 
-  async function handleAdminSearchInput() {
-    const q = (document.getElementById('adminRequestSearchBox').value || '').trim();
-    if (adminRequestSearchTimer) clearTimeout(adminRequestSearchTimer);
-    adminRequestSearchTimer = setTimeout(async () => {
-      if (!q) {
-        renderTitleSearchResults('adminRequestSearchResults', [], () => {});
-        return;
-      }
-      const results = await fetchSearchResults(q);
-      renderTitleSearchResults('adminRequestSearchResults', results, item => {
-        selectAdminTitle(item);
-      });
-    }, 250);
-  }
-
   async function submitRequest() {
     const status = document.getElementById('requestSubmitStatus');
     if (!selectedTitle) return;
@@ -312,38 +258,6 @@
       document.getElementById('selectedTitleText').textContent = 'None';
     } else {
       status.textContent = (data && data.message) ? data.message : 'Request failed.';
-    }
-  }
-
-  async function submitAdminRequest() {
-    const status = document.getElementById('adminRequestSubmitStatus');
-    const button = document.getElementById('adminSubmitRequestBtn');
-
-    if (!adminSelectedTitle || !adminSelectedTitle.id) {
-      status.textContent = 'Select a title from TitleDB first.';
-      return;
-    }
-
-    button.setAttribute('disabled', 'true');
-    status.textContent = 'Submitting...';
-    try {
-      const data = await apiPost('/api/requests', {
-        title_id: String(adminSelectedTitle.id || '').trim().toUpperCase(),
-        title_name: String(adminSelectedTitle.name || '').trim(),
-      });
-      if (data && data.success) {
-        adminSelectedTitle = null;
-        document.getElementById('adminRequestSearchBox').value = '';
-        document.getElementById('adminRequestSearchResults').innerHTML = '';
-        document.getElementById('adminSelectedTitleText').textContent = 'Selected: None';
-        document.getElementById('adminSubmitRequestBtn').disabled = true;
-        status.textContent = data.message || 'Request created.';
-        await refreshAdminRequests();
-      } else {
-        status.textContent = (data && data.message) ? data.message : 'Request failed.';
-      }
-    } finally {
-      button.removeAttribute('disabled');
     }
   }
 
@@ -490,17 +404,11 @@
     }
   });
 
-  if (!isAdmin) {
-    document.getElementById('requestSearchBox')?.addEventListener('input', handleUserSearchInput);
-    document.getElementById('submitRequestBtn')?.addEventListener('click', submitRequest);
-  } else {
+  document.getElementById('requestSearchBox')?.addEventListener('input', handleUserSearchInput);
+  document.getElementById('submitRequestBtn')?.addEventListener('click', submitRequest);
+
+  if (isAdmin) {
     document.getElementById('refreshRequestsBtn')?.addEventListener('click', refreshAdminRequests);
-    document.getElementById('adminRequestSearchBox')?.addEventListener('focus', unlockAdminSearchInput);
-    document.getElementById('adminRequestSearchBox')?.addEventListener('pointerdown', unlockAdminSearchInput);
-    document.getElementById('adminRequestSearchBox')?.addEventListener('blur', lockAdminSearchInput);
-    document.getElementById('adminRequestSearchBox')?.addEventListener('input', handleAdminSearchInput);
-    document.getElementById('adminSubmitRequestBtn')?.addEventListener('click', submitAdminRequest);
-    document.getElementById('adminSubmitRequestBtn')?.setAttribute('disabled', 'true');
     document.getElementById('adminSearchBox')?.addEventListener('input', renderAdminRequestsTable);
     refreshAdminRequests();
   }

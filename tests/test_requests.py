@@ -94,27 +94,6 @@ class RequestFlowTests(unittest.TestCase):
 
 
 class RequestTemplateRegressionTests(unittest.TestCase):
-    def test_requests_template_includes_admin_add_request_controls(self):
-        content = (REPO_ROOT / "app" / "templates" / "requests.html").read_text(encoding="utf-8")
-
-        self.assertIn('id="adminRequestSearchBox" placeholder="Search by name or title id (e.g. Mario, 0100...)" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly', content)
-        self.assertIn('id="adminRequestSearchResults"', content)
-        self.assertIn('id="adminSelectedTitleText"', content)
-        self.assertIn('id="adminSubmitRequestBtn"', content)
-        self.assertIn("function unlockAdminSearchInput() {", content)
-        self.assertIn("function lockAdminSearchInput() {", content)
-        self.assertIn("let adminSelectedTitle = null;", content)
-        self.assertIn("if (!adminSelectedTitle || !adminSelectedTitle.id) {", content)
-        self.assertIn("document.getElementById('adminRequestSearchBox')?.addEventListener('focus', unlockAdminSearchInput);", content)
-        self.assertIn("document.getElementById('adminRequestSearchBox')?.addEventListener('pointerdown', unlockAdminSearchInput);", content)
-        self.assertIn("document.getElementById('adminRequestSearchBox')?.addEventListener('blur', lockAdminSearchInput);", content)
-        self.assertIn("document.getElementById('adminRequestSearchBox')?.addEventListener('input', handleAdminSearchInput);", content)
-        self.assertIn("document.getElementById('adminSubmitRequestBtn')?.addEventListener('click', submitAdminRequest);", content)
-        self.assertIn("document.getElementById('adminSubmitRequestBtn')?.setAttribute('disabled', 'true');", content)
-        self.assertNotIn('id="adminManualTitleId"', content)
-        self.assertNotIn('id="adminManualTitleName"', content)
-        self.assertNotIn('adminRequestSearchSuggestions', content)
-
     def test_requests_template_keeps_end_user_request_controls(self):
         content = (REPO_ROOT / "app" / "templates" / "requests.html").read_text(encoding="utf-8")
 
