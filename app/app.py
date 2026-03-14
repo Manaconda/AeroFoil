@@ -1001,12 +1001,6 @@ def _build_shop_sections_payload(limit, full_catalog=False):
         .all()
     )
 
-    def _safe_int(value, default=0):
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-
     info_cache = {}
 
     with titles.titledb_session() as titledb_loaded:

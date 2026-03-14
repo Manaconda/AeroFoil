@@ -531,175 +531,71 @@ def load_settings(force_reload=False):
         if not force_reload and _is_settings_cache_valid(current_signature, current_time):
             return _settings_cache
 
-        if os.path.exists(CONFIG_FILE):
+        config_exists = os.path.exists(CONFIG_FILE)
+        if config_exists:
             logger.debug('Reading configuration file.')
             with open(CONFIG_FILE, 'r') as yaml_file:
                 settings = yaml.safe_load(yaml_file) or {}
             if not isinstance(settings, dict):
                 settings = {}
-
-            if 'security' not in settings:
-                settings['security'] = DEFAULT_SETTINGS.get('security', {})
-            else:
-                defaults = DEFAULT_SETTINGS.get('security', {})
-                merged = defaults.copy()
-                merged.update(settings.get('security', {}))
-                settings['security'] = merged
-
-            if 'shop' not in settings:
-                settings['shop'] = DEFAULT_SETTINGS.get('shop', {})
-            else:
-                defaults = DEFAULT_SETTINGS.get('shop', {})
-                merged = defaults.copy()
-                merged.update(settings.get('shop', {}))
-                settings['shop'] = merged
-            settings['shop']['fast_transfer_mode'] = _coerce_bool(
-                settings['shop'].get('fast_transfer_mode'),
-                default=False,
-            )
-
-            env_trust = _read_env_bool('AEROFOIL_TRUST_PROXY_HEADERS')
-            if env_trust is None:
-                env_trust = _read_env_bool('OWNFOIL_TRUST_PROXY_HEADERS')
-            if env_trust is not None:
-                settings['security']['trust_proxy_headers'] = env_trust
-            env_proxies = _read_env_csv('AEROFOIL_TRUSTED_PROXIES')
-            if env_proxies is None:
-                env_proxies = _read_env_csv('OWNFOIL_TRUSTED_PROXIES')
-            if env_proxies is not None:
-                settings['security']['trusted_proxies'] = env_proxies
-            settings['security'] = _normalize_security_settings(settings.get('security'))
-
-            if 'downloads' not in settings:
-                settings['downloads'] = DEFAULT_SETTINGS.get('downloads', {})
-            else:
-                defaults = DEFAULT_SETTINGS.get('downloads', {})
-                merged = defaults.copy()
-                merged.update(settings.get('downloads', {}))
-                settings['downloads'] = merged
-            # Keep nested downloads settings backward-compatible when new keys are added.
-            prowlarr_defaults = (DEFAULT_SETTINGS.get('downloads', {}) or {}).get('prowlarr', {})
-            merged_prowlarr = prowlarr_defaults.copy()
-            merged_prowlarr.update((settings['downloads'].get('prowlarr') or {}))
-            settings['downloads']['prowlarr'] = merged_prowlarr
-            settings['downloads']['search_char_replacements'] = _normalize_download_search_char_replacements(
-                settings['downloads'].get('search_char_replacements')
-            )
-
-            if 'titles' not in settings:
-                settings['titles'] = DEFAULT_SETTINGS.get('titles', {})
-            else:
-                defaults = DEFAULT_SETTINGS.get('titles', {})
-                merged = defaults.copy()
-                merged.update(settings.get('titles', {}))
-                settings['titles'] = merged
-            settings['titles']['manual_overrides'] = _normalize_titles_manual_overrides(
-                settings['titles'].get('manual_overrides')
-            )
-
-            if 'library' not in settings:
-                settings['library'] = DEFAULT_SETTINGS.get('library', {})
-            else:
-                defaults = DEFAULT_SETTINGS.get('library', {})
-                merged = defaults.copy()
-                merged.update(settings.get('library', {}))
-                settings['library'] = merged
-            env_conversion_staging_dir = _resolve_env_conversion_staging_dir()
-            if env_conversion_staging_dir is not None:
-                settings['library']['conversion_staging_dir'] = env_conversion_staging_dir
-            settings['library']['conversion_staging_dir'] = _normalize_conversion_staging_dir(
-                settings['library'].get('conversion_staging_dir')
-            )
-            settings['library']['naming_templates'] = _normalize_library_naming_templates(
-                settings['library'].get('naming_templates')
-            )
-
-            valid_keys = load_keys()
-            settings['titles']['valid_keys'] = valid_keys
-
         else:
-            settings = DEFAULT_SETTINGS
-            env_trust = _read_env_bool('AEROFOIL_TRUST_PROXY_HEADERS')
-            if env_trust is None:
-                env_trust = _read_env_bool('OWNFOIL_TRUST_PROXY_HEADERS')
-            if env_trust is not None:
-                settings['security']['trust_proxy_headers'] = env_trust
-            env_proxies = _read_env_csv('AEROFOIL_TRUSTED_PROXIES')
-            if env_proxies is None:
-                env_proxies = _read_env_csv('OWNFOIL_TRUSTED_PROXIES')
-            if env_proxies is not None:
-                settings['security']['trusted_proxies'] = env_proxies
-            settings['security'] = _normalize_security_settings(settings.get('security'))
-            with open(CONFIG_FILE, 'w') as yaml_file:
-                yaml.dump(settings, yaml_file)
+            settings = {}
 
-        settings['security'] = _normalize_security_settings(settings.get('security'))
-        if 'downloads' not in settings:
-            settings['downloads'] = DEFAULT_SETTINGS.get('downloads', {})
-        else:
-            settings['downloads'] = _normalize_download_settings(settings.get('downloads', {}))
-
-        if 'titles' not in settings:
-            settings['titles'] = DEFAULT_SETTINGS.get('titles', {})
-        else:
-            defaults = DEFAULT_SETTINGS.get('titles', {})
+        def _merge_section(name):
+            defaults = DEFAULT_SETTINGS.get(name, {})
             merged = defaults.copy()
-            merged.update(settings.get('titles', {}))
-            settings['titles'] = merged
-        settings['titles']['manual_overrides'] = _normalize_titles_manual_overrides(
-            settings['titles'].get('manual_overrides')
-        )
+            raw_section = settings.get(name, {})
+            if isinstance(raw_section, dict):
+                merged.update(raw_section)
+            settings[name] = merged
 
-        if 'library' not in settings:
-            settings['library'] = DEFAULT_SETTINGS.get('library', {})
-        else:
-            defaults = DEFAULT_SETTINGS.get('library', {})
-            merged = defaults.copy()
-            merged.update(settings.get('library', {}))
-            settings['library'] = merged
-        settings['library']['naming_templates'] = _normalize_library_naming_templates(
-            settings['library'].get('naming_templates')
-        )
+        _merge_section('security')
+        _merge_section('shop')
+        _merge_section('titles')
+        _merge_section('library')
 
-        valid_keys = load_keys()
-        settings['titles']['valid_keys'] = valid_keys
-
-    else:
-        settings = DEFAULT_SETTINGS
         env_trust = _read_env_bool('AEROFOIL_TRUST_PROXY_HEADERS')
         if env_trust is None:
             env_trust = _read_env_bool('OWNFOIL_TRUST_PROXY_HEADERS')
         if env_trust is not None:
             settings['security']['trust_proxy_headers'] = env_trust
+
         env_proxies = _read_env_csv('AEROFOIL_TRUSTED_PROXIES')
         if env_proxies is None:
             env_proxies = _read_env_csv('OWNFOIL_TRUSTED_PROXIES')
         if env_proxies is not None:
             settings['security']['trusted_proxies'] = env_proxies
-        settings['security'] = _normalize_security_settings(settings.get('security'))
-        with open(CONFIG_FILE, 'w') as yaml_file:
-            yaml.dump(settings, yaml_file)
-    settings['security'] = _normalize_security_settings(settings.get('security'))
-    settings.setdefault('library', {})
-    settings['library']['naming_templates'] = _normalize_library_naming_templates(
-        settings['library'].get('naming_templates')
-    )
-    settings.setdefault('titles', {})
-    settings['titles']['manual_overrides'] = _normalize_titles_manual_overrides(
-        settings['titles'].get('manual_overrides')
-    )
-    settings.setdefault('downloads', {})
-    settings['downloads'] = _normalize_download_settings(settings.get('downloads'))
-    settings.setdefault('shop', {})
-    settings['shop']['fast_transfer_mode'] = _coerce_bool(
-        settings['shop'].get('fast_transfer_mode'),
-        default=False,
-    )
 
-    _settings_cache = settings
-    _settings_cache_time = current_time
-    _settings_cache_signature = _get_settings_signature()
-    return settings
+        env_conversion_staging_dir = _resolve_env_conversion_staging_dir()
+        if env_conversion_staging_dir is not None:
+            settings['library']['conversion_staging_dir'] = env_conversion_staging_dir
+
+        settings['security'] = _normalize_security_settings(settings.get('security'))
+        settings['downloads'] = _normalize_download_settings(settings.get('downloads'))
+        settings['titles']['manual_overrides'] = _normalize_titles_manual_overrides(
+            settings['titles'].get('manual_overrides')
+        )
+        settings['library']['conversion_staging_dir'] = _normalize_conversion_staging_dir(
+            settings['library'].get('conversion_staging_dir')
+        )
+        settings['library']['naming_templates'] = _normalize_library_naming_templates(
+            settings['library'].get('naming_templates')
+        )
+        settings['shop']['fast_transfer_mode'] = _coerce_bool(
+            settings['shop'].get('fast_transfer_mode'),
+            default=False,
+        )
+
+        if not config_exists:
+            with open(CONFIG_FILE, 'w') as yaml_file:
+                yaml.dump(settings, yaml_file)
+
+        settings['titles']['valid_keys'] = load_keys()
+
+        _settings_cache = settings
+        _settings_cache_time = current_time
+        _settings_cache_signature = _get_settings_signature()
+        return settings
 
 
 def set_security_settings(data):

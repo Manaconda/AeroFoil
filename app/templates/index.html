@@ -664,43 +664,6 @@
         return div.innerHTML;
     }
 
-    function appendTorrentSearchRow(target, item, options = {}) {
-        const row = $('<tr></tr>');
-        const titleText = item && item.title ? String(item.title) : '-';
-        const indexerText = item && item.indexer ? String(item.indexer) : '-';
-        const protocolText = getProtocolLabel(item ? item.protocol : '');
-        const ageText = item && item.age_label ? String(item.age_label) : '-';
-        const seeders = (item && item.seeders !== undefined && item.seeders !== null) ? String(item.seeders) : '-';
-        const leechers = (item && item.leechers !== undefined && item.leechers !== null) ? String(item.leechers) : '-';
-
-        row.append($('<td></td>').text(titleText));
-        row.append($('<td></td>').text(indexerText));
-        row.append($('<td></td>').text(protocolText));
-        row.append($('<td></td>').text(ageText));
-        row.append($('<td></td>').text(formatBytes(item ? item.size : 0)));
-        row.append($('<td></td>').text(seeders));
-        row.append($('<td></td>').text(leechers));
-
-        const actionCell = $('<td></td>');
-        const button = $('<button type="button" class="btn btn-sm btn-warning queue-download-btn"></button>');
-        button.text(options.buttonLabel || 'Queue');
-        button.attr('data-download-url', String((item && item.download_url) || ''));
-        button.attr('data-title', String((item && item.title) || ''));
-        button.attr('data-protocol', String((item && item.protocol) || ''));
-        if (options.titleId !== undefined && options.titleId !== null) {
-            button.attr('data-title-id', String(options.titleId));
-        }
-        if (options.updateOnly) {
-            button.attr('data-update-only', 'true');
-        }
-        if (options.expectedVersion !== undefined && options.expectedVersion !== null) {
-            button.attr('data-expected-version', String(options.expectedVersion));
-        }
-        actionCell.append(button);
-        row.append(actionCell);
-        target.append(row);
-    }
-
     function renderDiscoverRow(containerId, items) {
         const el = document.getElementById(containerId);
         if (!el) return;
@@ -1760,21 +1723,6 @@
 
     const detailsModalEl = document.getElementById('detailsModal');
     const detailsModalInstance = detailsModalEl ? bootstrap.Modal.getOrCreateInstance(detailsModalEl) : null;
-
-    function refreshLibraryAfterDelete(successMessage) {
-        gameDetailsCache.clear();
-        return refreshGames(false)
-            .then(() => {
-                if (successMessage) {
-                    showLibraryAlert(successMessage, 'success');
-                }
-            })
-            .catch(() => {
-                if (successMessage) {
-                    showLibraryAlert(successMessage, 'success');
-                }
-            });
-    }
 
     function handleSuccessfulDeleteCompletion(message, alertType = 'success') {
         if (detailsModalInstance) {

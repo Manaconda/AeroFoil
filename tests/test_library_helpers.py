@@ -1,10 +1,11 @@
 import os
 import shutil
-import tempfile
 import unittest
 from collections import namedtuple
 from types import SimpleNamespace
 from unittest.mock import patch
+
+TEST_TMP_ROOT = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".tmp")
 
 _IMPORT_ERROR = None
 flask_app = None
@@ -58,6 +59,14 @@ class LibraryHelperTests(unittest.TestCase):
             apps=list(linked_apps),
         )
 
+    def _make_test_temp_root(self, name):
+        os.makedirs(TEST_TMP_ROOT, exist_ok=True)
+        tmp_root = os.path.join(TEST_TMP_ROOT, name)
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        os.makedirs(tmp_root, exist_ok=True)
+        self.addCleanup(shutil.rmtree, tmp_root, ignore_errors=True)
+        return tmp_root
+
     def test_sort_library_rows_by_title_name_uses_visible_title_names(self):
         row_type = namedtuple("LibraryRow", ["title_id", "app_id"])
         rows = [
@@ -110,9 +119,16 @@ class LibraryHelperTests(unittest.TestCase):
         self.assertTrue(staged_output.startswith(staging + os.sep))
         self.assertEqual(os.path.basename(staged_output), 'Game.nsz')
 
-    def test_finalize_staged_conversion_output_moves_file_to_source_directory(self):
-        tmp_root = tempfile.mkdtemp(prefix='aerofoil_finalize_')
-        self.addCleanup(shutil.rmtree, tmp_root, ignore_errors=True)
+    @patch("app.library._resolve_existing_output_path", return_value=None)
+    @patch("app.library._cleanup_empty_parent_dirs")
+    @patch("app.library.shutil.move")
+    def test_finalize_staged_conversion_output_moves_file_to_source_directory(
+        self,
+        move_mock,
+        cleanup_mock,
+        existing_output_mock,
+    ):
+        tmp_root = self._make_test_temp_root('aerofoil_finalize')
 
         library_dir = os.path.join(tmp_root, 'library')
         staging_root = os.path.join(tmp_root, 'staging')
@@ -133,12 +149,11 @@ class LibraryHelperTests(unittest.TestCase):
         )
 
         self.assertEqual(final_output, os.path.join(library_dir, 'Sample.nsz'))
-        self.assertTrue(os.path.exists(final_output))
-        self.assertFalse(os.path.exists(staged_output))
+        move_mock.assert_called_once_with(staged_output, final_output)
+        cleanup_mock.assert_called_once_with(os.path.dirname(staged_output), staging_root)
 
     def test_finalize_staged_conversion_output_fails_if_final_exists(self):
-        tmp_root = tempfile.mkdtemp(prefix='aerofoil_finalize_exists_')
-        self.addCleanup(shutil.rmtree, tmp_root, ignore_errors=True)
+        tmp_root = self._make_test_temp_root('aerofoil_finalize_exists')
 
         library_dir = os.path.join(tmp_root, 'library')
         staging_root = os.path.join(tmp_root, 'staging')
