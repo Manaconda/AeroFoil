@@ -102,10 +102,10 @@ DEFAULT_SETTINGS = {
     "downloads": {
         "enabled": False,
         "interval_minutes": 60,
-        "min_seeders": 2,
+        "category": "aerofoil",
         "required_terms": [],
         "blacklist_terms": [],
-        "search_prefix": "",
+        "search_prefix": "Nintendo Switch",
         "search_suffix": "",
         "search_char_replacements": [
             {"from": "™", "to": ""},
@@ -118,7 +118,8 @@ DEFAULT_SETTINGS = {
             "api_key": "",
             "indexer_ids": [],
             "categories": [],
-            "timeout_seconds": 15
+            "timeout_seconds": 15,
+            "search_limit": 100
         },
         "torrent_client": {
             "type": "qbittorrent",
@@ -126,7 +127,15 @@ DEFAULT_SETTINGS = {
             "username": "",
             "password": "",
             "category": "aerofoil",
-            "download_path": ""
+            "download_path": "",
+            "min_seeders": 2,
+        },
+        "usenet_client": {
+            "type": "sabnzbd",
+            "url": "",
+            "api_key": "",
+            "category": "aerofoil",
+            "min_age_minutes": 0,
         }
     },
     "shop": {
