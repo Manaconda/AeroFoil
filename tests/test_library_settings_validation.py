@@ -1,15 +1,21 @@
 import os
 import shutil
 import stat
-import tempfile
 import unittest
+from unittest.mock import patch
 
 from app.settings import verify_settings
+
+TEST_TMP_ROOT = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".tmp", "library-settings-tests")
 
 
 class LibrarySettingsValidationTests(unittest.TestCase):
     def setUp(self):
-        self.tmp_root = tempfile.mkdtemp(prefix='aerofoil_library_settings_')
+        os.makedirs(TEST_TMP_ROOT, exist_ok=True)
+        case_name = self.id().rsplit('.', 1)[-1]
+        self.tmp_root = os.path.join(TEST_TMP_ROOT, case_name)
+        shutil.rmtree(self.tmp_root, ignore_errors=True)
+        os.makedirs(self.tmp_root, exist_ok=True)
         self.library_path = os.path.join(self.tmp_root, 'library')
         self.staging_path = os.path.join(self.tmp_root, 'staging')
         os.makedirs(self.library_path, exist_ok=True)
@@ -56,12 +62,13 @@ class LibrarySettingsValidationTests(unittest.TestCase):
         readonly_dir = os.path.join(self.tmp_root, 'readonly')
         os.makedirs(readonly_dir, exist_ok=True)
         original_mode = stat.S_IMODE(os.stat(readonly_dir).st_mode)
-        try:
-            os.chmod(readonly_dir, 0o555)
-            payload['conversion_staging_dir'] = readonly_dir
-            success, errors = verify_settings('library', payload)
-        finally:
-            os.chmod(readonly_dir, original_mode)
+        with patch("app.settings.os.access", return_value=False):
+            try:
+                os.chmod(readonly_dir, 0o555)
+                payload['conversion_staging_dir'] = readonly_dir
+                success, errors = verify_settings('library', payload)
+            finally:
+                os.chmod(readonly_dir, original_mode)
         self.assertFalse(success)
         self.assertTrue(any('not writable' in (err.get('error') or '') for err in errors))
 

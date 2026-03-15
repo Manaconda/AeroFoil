@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import importlib.util
+from sqlalchemy.orm import aliased
 from app.constants import *
 from app.db import *
 from app import titles as titles_lib
@@ -19,6 +20,7 @@ from app.utils import *
 
 _organize_lock = threading.Lock()
 _pending_organize_paths = set()
+_pending_cleanup_roots = set()
 _SCAN_ADD_BATCH_SIZE = 250
 _SCAN_DELETE_PROGRESS_INTERVAL = 250
 _IDENTIFY_QUERY_BATCH_SIZE = 500
@@ -1161,6 +1163,7 @@ def _format_nsz_command(command_template, input_file, output_file, threads=None,
         command_template = '{nsz_runner} --keys "{nsz_keys}" --minimal-output --verify -C -o "{output_dir}" "{input_file}"'
     command = command_template.format(
         nsz_runner=nsz_runner,
+        nsz_exe=nsz_runner,
         nsz_keys=nsz_keys,
         input_file=input_file,
         output_file=output_file,
@@ -1944,27 +1947,255 @@ def enqueue_organize_paths(filepaths):
         return
     with _organize_lock:
         for path in filepaths:
-            if path:
-                _pending_organize_paths.add(path)
+            if not path:
+                continue
+            normalized_path = os.path.normpath(path)
+            if os.path.isfile(normalized_path):
+                _pending_organize_paths.add(normalized_path)
+                continue
+            if os.path.isdir(normalized_path):
+                for root, _, filenames in os.walk(normalized_path):
+                    for filename in filenames:
+                        _pending_organize_paths.add(os.path.normpath(os.path.join(root, filename)))
+                continue
+            _pending_organize_paths.add(normalized_path)
+
+
+def enqueue_cleanup_roots(paths):
+    if not paths:
+        return
+    with _organize_lock:
+        for path in paths:
+            if path and os.path.isdir(path):
+                _pending_cleanup_roots.add(os.path.normpath(path))
+
+
+def _cleanup_import_staging_roots(paths):
+    for root in paths or []:
+        if not root or not os.path.isdir(root):
+            continue
+        for dirpath, _, filenames in os.walk(root, topdown=False):
+            for filename in filenames:
+                extension = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+                if extension in ALLOWED_EXTENSIONS:
+                    continue
+                try:
+                    os.remove(os.path.join(dirpath, filename))
+                except OSError:
+                    continue
+            try:
+                if not os.listdir(dirpath):
+                    os.rmdir(dirpath)
+            except OSError:
+                continue
 
 def organize_pending_downloads():
     with _organize_lock:
         if not _pending_organize_paths:
-            return
-        pending = list(_pending_organize_paths)
-        _pending_organize_paths.clear()
-    results = organize_files(pending, dry_run=False, verbose=False)
-    if not results.get('success'):
-        logger.warning("Failed to auto-organize completed downloads: %s", results.get('errors'))
+            pending = []
+        else:
+            pending = list(_pending_organize_paths)
+            _pending_organize_paths.clear()
+        cleanup_roots = list(_pending_cleanup_roots)
+        _pending_cleanup_roots.clear()
+    if pending:
+        results = organize_files(pending, dry_run=False, verbose=False)
+        if not results.get('success'):
+            logger.warning("Failed to auto-organize completed downloads: %s", results.get('errors'))
+    if cleanup_roots:
+        _cleanup_import_staging_roots(cleanup_roots)
 
-def delete_older_updates(dry_run=False, verbose=False, detail_limit=200):
-    results = {
+def _new_delete_results():
+    return {
         'success': True,
         'deleted': 0,
         'skipped': 0,
+        'mutated': False,
         'errors': [],
         'details': []
     }
+
+def _merge_delete_results(results, partial_results, add_detail=None):
+    if not partial_results:
+        return
+    results['deleted'] += int(partial_results.get('deleted') or 0)
+    results['skipped'] += int(partial_results.get('skipped') or 0)
+    if partial_results.get('mutated'):
+        results['mutated'] = True
+    results['errors'].extend(partial_results.get('errors') or [])
+    if add_detail:
+        for detail in partial_results.get('details') or []:
+            add_detail(detail)
+
+def _resolve_delete_targets(scope, title_id=None, app_id=None, app_type=None, version=None):
+    scope_name = str(scope or '').strip().lower()
+    normalized_title_id = str(title_id or '').strip().upper()
+    normalized_app_id = str(app_id or '').strip().upper()
+    normalized_app_type = str(app_type or '').strip().upper()
+    normalized_version = None if version is None else str(version).strip()
+
+    if scope_name == 'title_cascade':
+        if not normalized_title_id:
+            raise ValueError('Missing title_id for title cascade delete.')
+        title = Titles.query.filter(func.upper(Titles.title_id) == normalized_title_id).first()
+        if not title:
+            raise ValueError(f'Title {normalized_title_id} was not found.')
+        return (
+            Apps.query
+            .filter(
+                Apps.title_id == title.id,
+                Apps.owned.is_(True),
+                Apps.app_type.in_([APP_TYPE_BASE, APP_TYPE_UPD, APP_TYPE_DLC])
+            )
+            .all()
+        )
+
+    if scope_name == 'app_version':
+        if not normalized_app_id:
+            raise ValueError('Missing app_id for app version delete.')
+        if normalized_app_type not in (APP_TYPE_UPD, APP_TYPE_DLC):
+            raise ValueError('app_type must be UPDATE or DLC for app version delete.')
+        if normalized_version in (None, ''):
+            raise ValueError('Missing version for app version delete.')
+        return (
+            Apps.query
+            .filter(
+                func.upper(Apps.app_id) == normalized_app_id,
+                Apps.app_type == normalized_app_type,
+                Apps.app_version == normalized_version,
+                Apps.owned.is_(True)
+            )
+            .all()
+        )
+
+    raise ValueError(f'Unsupported delete scope: {scope}')
+
+def _delete_target_apps(target_apps, dry_run=False, verbose=False, detail_limit=200):
+    results = _new_delete_results()
+    detail_count = 0
+
+    def add_detail(message):
+        nonlocal detail_count
+        if (verbose or dry_run) and detail_count < detail_limit:
+            results['details'].append(message)
+            detail_count += 1
+
+    target_apps = [app for app in (target_apps or []) if app is not None]
+    if not target_apps:
+        add_detail('No owned content matched the requested delete target.')
+        return results
+
+    target_app_ids = {int(app.id) for app in target_apps if getattr(app, 'id', None) is not None}
+    processed_file_ids = set()
+    candidate_filepaths = []
+
+    for app in target_apps:
+        app_label = f"{app.app_type} {app.app_id} v{app.app_version}"
+        app_files_list = [file_entry for file_entry in list(app.files or []) if file_entry]
+        if not app_files_list:
+            results['skipped'] += 1
+            add_detail(f"Skip {app_label}: no linked files.")
+            continue
+
+        for file_entry in app_files_list:
+            file_id = getattr(file_entry, 'id', None)
+            if file_id is None or file_id in processed_file_ids:
+                continue
+            processed_file_ids.add(file_id)
+
+            filepath = str(getattr(file_entry, 'filepath', '') or '')
+            linked_apps = [linked for linked in list(getattr(file_entry, 'apps', []) or []) if linked is not None]
+            foreign_apps = [linked for linked in linked_apps if getattr(linked, 'id', None) not in target_app_ids]
+            if foreign_apps:
+                foreign_labels = ', '.join(
+                    f"{linked.app_type} {linked.app_id} v{linked.app_version}"
+                    for linked in foreign_apps
+                )
+                results['skipped'] += 1
+                add_detail(f"Skip shared file {filepath}: linked to non-target apps {foreign_labels}.")
+                continue
+
+            candidate_filepaths.append(filepath)
+
+    unique_filepaths = list(dict.fromkeys([path for path in candidate_filepaths if path]))
+    if not unique_filepaths:
+        add_detail('No deletable files matched the requested delete target.')
+        return results
+
+    for filepath in unique_filepaths:
+        if dry_run:
+            results['deleted'] += 1
+            add_detail(f"Plan delete: {filepath}.")
+            continue
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            delete_file_by_filepath(filepath)
+            results['deleted'] += 1
+            results['mutated'] = True
+            add_detail(f"Deleted: {filepath}.")
+        except Exception as e:
+            logger.error(f"Failed to delete file {filepath}: {e}")
+            db.session.rollback()
+            results['errors'].append(str(e))
+            add_detail(f"Error deleting {filepath}: {e}.")
+
+    if results['errors']:
+        results['success'] = False
+    return results
+
+def delete_library_content(scope, dry_run=False, verbose=False, detail_limit=200, title_id=None, app_id=None, app_type=None, version=None):
+    try:
+        target_apps = _resolve_delete_targets(
+            scope=scope,
+            title_id=title_id,
+            app_id=app_id,
+            app_type=app_type,
+            version=version
+        )
+    except ValueError as e:
+        results = _new_delete_results()
+        results['success'] = False
+        results['errors'].append(str(e))
+        return results
+
+    return _delete_target_apps(
+        target_apps,
+        dry_run=dry_run,
+        verbose=verbose,
+        detail_limit=detail_limit
+    )
+
+def delete_orphaned_addons(dry_run=False, verbose=False, detail_limit=200):
+    base_apps = aliased(Apps)
+    owned_base_title_ids = (
+        db.session.query(base_apps.title_id.label('title_fk'))
+        .filter(
+            base_apps.app_type == APP_TYPE_BASE,
+            base_apps.owned.is_(True)
+        )
+        .distinct()
+        .subquery()
+    )
+    target_apps = (
+        Apps.query
+        .join(Titles, Apps.title_id == Titles.id)
+        .filter(
+            Apps.owned.is_(True),
+            Apps.app_type.in_([APP_TYPE_UPD, APP_TYPE_DLC]),
+            ~Apps.title_id.in_(db.session.query(owned_base_title_ids.c.title_fk))
+        )
+        .all()
+    )
+    return _delete_target_apps(
+        target_apps,
+        dry_run=dry_run,
+        verbose=verbose,
+        detail_limit=detail_limit
+    )
+
+def delete_older_updates(dry_run=False, verbose=False, detail_limit=200):
+    results = _new_delete_results()
     detail_count = 0
 
     def add_detail(message):
@@ -1989,39 +2220,21 @@ def delete_older_updates(dry_run=False, verbose=False, detail_limit=200):
         for app in update_apps:
             if app.id == latest_app.id:
                 continue
-            filepaths = [file.filepath for file in list(app.files)]
-            if not filepaths:
-                results['skipped'] += 1
-                add_detail(f"Skip no files for update {app.app_id} v{app.app_version}.")
-                continue
-            for filepath in filepaths:
-                if dry_run:
-                    results['deleted'] += 1
-                    add_detail(f"Plan delete: {filepath}.")
-                    continue
-                try:
-                    if filepath and os.path.exists(filepath):
-                        os.remove(filepath)
-                    delete_file_by_filepath(filepath)
-                    results['deleted'] += 1
-                    add_detail(f"Deleted: {filepath}.")
-                except Exception as e:
-                    logger.error(f"Failed to delete update {filepath}: {e}")
-                    results['errors'].append(str(e))
-                    add_detail(f"Error deleting {filepath}: {e}.")
+            remaining_detail_limit = max(0, detail_limit - detail_count)
+            partial_results = _delete_target_apps(
+                [app],
+                dry_run=dry_run,
+                verbose=verbose,
+                detail_limit=remaining_detail_limit,
+            )
+            _merge_delete_results(results, partial_results, add_detail=add_detail)
 
     if results['errors']:
         results['success'] = False
     return results
 
 def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
-    results = {
-        'success': True,
-        'deleted': 0,
-        'skipped': 0,
-        'errors': [],
-        'details': []
-    }
+    results = _new_delete_results()
     detail_count = 0
 
     def add_detail(message):

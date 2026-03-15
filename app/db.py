@@ -25,6 +25,10 @@ logger = logging.getLogger('main')
 db = SQLAlchemy()
 migrate = Migrate()
 
+
+def utc_now():
+    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+
 # Alembic functions
 def get_alembic_cfg():
     cfg = Config(ALEMBIC_CONF)
@@ -205,7 +209,7 @@ class User(UserMixin, db.Model):
 
 class TitleRequests(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
+    created_at = db.Column(db.DateTime, nullable=False, default=utc_now)
     status = db.Column(db.String, nullable=False, default='open')
     title_id = db.Column(db.String, nullable=False)
     title_name = db.Column(db.String)
@@ -218,7 +222,7 @@ class TitleRequestViews(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
     request_id = db.Column(db.Integer, db.ForeignKey('title_requests.id', ondelete='CASCADE'), nullable=False)
-    viewed_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
+    viewed_at = db.Column(db.DateTime, nullable=False, default=utc_now)
 
     __table_args__ = (db.UniqueConstraint('user_id', 'request_id', name='uq_title_request_views_user_request'),)
 
@@ -228,7 +232,7 @@ class TitleRequestViews(db.Model):
 
 class AccessEvents(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
+    at = db.Column(db.DateTime, nullable=False, default=utc_now)
     kind = db.Column(db.String, nullable=False)
     user = db.Column(db.String)
     remote_addr = db.Column(db.String)
@@ -369,7 +373,7 @@ def add_access_event(
 ):
     try:
         payload = {
-            'at': datetime.datetime.utcnow(),
+            'at': utc_now(),
             'kind': kind,
             'user': user,
             'remote_addr': remote_addr,

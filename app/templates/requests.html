@@ -11,7 +11,7 @@
           <div>
             {% if current_user.is_admin or admin_account_created == false %}
             <h2 class="pb-2">Requests</h2>
-            <p class="text-muted">User title requests and torrent search.</p>
+            <p class="text-muted">User title requests and download search.</p>
             {% else %}
             <h2 class="pb-2">Request A Title</h2>
             <p class="text-muted">Search TitleDB and request content not yet in your library.</p>
@@ -26,6 +26,22 @@
 
         <div class="card bg-dark text-light mb-3">
           <div class="card-body">
+      <div class="row g-3 mb-3">
+        <div class="col-12 col-lg-8">
+          <input type="text" class="form-control" id="requestSearchBox" placeholder="Search by name or title id (e.g. Mario, 0100...)" autocomplete="off">
+          <div class="list-group mt-2" id="requestSearchResults"></div>
+        </div>
+        <div class="col-12 col-lg-4">
+          <div class="border rounded p-3">
+            <div class="fw-semibold">Selected</div>
+            <div class="text-muted small" id="selectedTitleText">None</div>
+            <button class="btn btn-warning btn-sm mt-3" id="submitRequestBtn" disabled>
+              <i class="bi bi-send"></i> Submit request
+            </button>
+            <div class="text-muted small mt-2" id="requestSubmitStatus"></div>
+          </div>
+        </div>
+      </div>
       {% if current_user.is_admin or admin_account_created == false %}
       <div class="d-flex flex-column flex-lg-row gap-2 align-items-lg-center">
         <div class="flex-grow-1">
@@ -48,22 +64,6 @@
       </div>
       <div class="text-muted small mt-2" id="requestsStatus"></div>
       {% else %}
-      <div class="row g-2">
-        <div class="col-12 col-lg-8">
-          <input type="text" class="form-control" id="requestSearchBox" placeholder="Search by name or title id (e.g. Mario, 0100...)" autocomplete="off">
-          <div class="list-group mt-2" id="requestSearchResults"></div>
-        </div>
-        <div class="col-12 col-lg-4">
-          <div class="border rounded p-3">
-            <div class="fw-semibold">Selected</div>
-            <div class="text-muted small" id="selectedTitleText">None</div>
-            <button class="btn btn-warning btn-sm mt-3" id="submitRequestBtn" disabled>
-              <i class="bi bi-send"></i> Submit request
-            </button>
-            <div class="text-muted small mt-2" id="requestSubmitStatus"></div>
-          </div>
-        </div>
-      </div>
       {% endif %}
     </div>
   </div>
@@ -71,13 +71,13 @@
     </div>
   </div>
 
-  <!-- Torrent Search Modal (admin) -->
+  <!-- Download Search Modal (admin) -->
   {% if current_user.is_admin or admin_account_created == false %}
   <div class="modal fade" id="requestTorrentSearchModal" tabindex="-1" aria-labelledby="requestTorrentSearchModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
       <div class="modal-content">
         <div class="modal-header">
-          <h1 class="modal-title fs-5" id="requestTorrentSearchModalLabel">Torrent search results</h1>
+          <h1 class="modal-title fs-5" id="requestTorrentSearchModalLabel">Download search results</h1>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
@@ -87,9 +87,18 @@
               <thead>
                 <tr>
                   <th scope="col">Title</th>
+                  <th scope="col">Indexer</th>
+                  {% if download_ui_visibility.show_protocol_column %}
+                  <th scope="col">Protocol</th>
+                  {% endif %}
+                  {% if download_ui_visibility.show_usenet_columns %}
+                  <th scope="col">Age</th>
+                  {% endif %}
                   <th scope="col">Size</th>
+                  {% if download_ui_visibility.show_torrent_columns %}
                   <th scope="col">Seeders</th>
                   <th scope="col">Leechers</th>
+                  {% endif %}
                   <th scope="col">Action</th>
                 </tr>
               </thead>
@@ -105,6 +114,7 @@
 
 <script>
   const isAdmin = {{ 'true' if current_user.is_admin or admin_account_created == false else 'false' }};
+  const downloadUiVisibility = {{ download_ui_visibility|tojson }};
 
   function escapeHtml(text) {
     const div = document.createElement('div');
@@ -122,6 +132,41 @@
       unitIndex += 1;
     }
     return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[unitIndex]}`;
+  }
+
+  function getProtocolLabel(protocol) {
+    const value = String(protocol || '').trim().toLowerCase();
+    if (value === 'usenet') return 'NZB';
+    if (value === 'torrent') return 'Torrent';
+    return value || '-';
+  }
+
+  function buildRequestDownloadSearchRow(item) {
+    const cells = [
+      `<td>${escapeHtml(item.title || '-')}</td>`,
+      `<td>${escapeHtml(item.indexer || '-')}</td>`,
+    ];
+    if (downloadUiVisibility.show_protocol_column) {
+      cells.push(`<td>${escapeHtml(getProtocolLabel(item.protocol))}</td>`);
+    }
+    if (downloadUiVisibility.show_usenet_columns) {
+      cells.push(`<td>${escapeHtml(item.age_label || '-')}</td>`);
+    }
+    cells.push(`<td>${formatBytes(item.size)}</td>`);
+    if (downloadUiVisibility.show_torrent_columns) {
+      cells.push(
+        `<td>${escapeHtml(String(item.seeders ?? '-'))}</td>`,
+        `<td>${escapeHtml(String(item.leechers ?? '-'))}</td>`
+      );
+    }
+    cells.push(`
+      <td>
+        <button class="btn btn-sm btn-warning queue-download-btn" data-download-url="${escapeHtml(item.download_url || '')}" data-title="${escapeHtml(item.title || '')}" data-protocol="${escapeHtml(item.protocol || '')}">
+          Queue
+        </button>
+      </td>
+    `);
+    return cells.join('');
   }
 
   let selectedTitle = null;
@@ -142,8 +187,17 @@
     return await resp.json();
   }
 
-  function renderUserSearchResults(results) {
-    const box = document.getElementById('requestSearchResults');
+  async function fetchSearchResults(query) {
+    const data = await apiGet(`/api/titledb/search?q=${encodeURIComponent(query)}&limit=25`);
+    if (!data || data.success !== true) {
+      return [];
+    }
+    const results = Array.isArray(data.results) ? data.results : [];
+    return results.filter(r => r && r.in_library !== true);
+  }
+
+  function renderTitleSearchResults(boxId, results, onSelect) {
+    const box = document.getElementById(boxId);
     box.innerHTML = '';
     if (!results || !results.length) return;
     results.forEach(item => {
@@ -162,12 +216,8 @@
       `;
       a.addEventListener('click', () => {
         if (disabled) return;
-        selectedTitle = item;
-        document.getElementById('selectedTitleText').textContent = `${item.name || 'Unrecognized'} (${item.id})`;
-        document.getElementById('submitRequestBtn').disabled = false;
-        document.getElementById('requestSubmitStatus').textContent = '';
+        onSelect(item);
         box.innerHTML = '';
-        document.getElementById('requestSearchBox').value = `${item.name || ''}`.trim();
       });
       box.appendChild(a);
     });
@@ -179,17 +229,17 @@
     if (searchTimer) clearTimeout(searchTimer);
     searchTimer = setTimeout(async () => {
       if (!q) {
-        renderUserSearchResults([]);
+        renderTitleSearchResults('requestSearchResults', [], () => {});
         return;
       }
-      const data = await apiGet(`/api/titledb/search?q=${encodeURIComponent(q)}&limit=25`);
-      if (!data || data.success !== true) {
-        renderUserSearchResults([]);
-        return;
-      }
-      const results = Array.isArray(data.results) ? data.results : [];
-      // Hide titles already present in the library.
-      renderUserSearchResults(results.filter(r => r && r.in_library !== true));
+      const results = await fetchSearchResults(q);
+      renderTitleSearchResults('requestSearchResults', results, item => {
+        selectedTitle = item;
+        document.getElementById('selectedTitleText').textContent = `${item.name || 'Unrecognized'} (${item.id})`;
+        document.getElementById('submitRequestBtn').disabled = false;
+        document.getElementById('requestSubmitStatus').textContent = '';
+        document.getElementById('requestSearchBox').value = `${item.name || ''}`.trim();
+      });
     }, 250);
   }
 
@@ -238,7 +288,7 @@
         <td class="text-end">
           <div class="btn-group btn-group-sm" role="group">
             <button class="btn btn-warning search-request-btn" data-title-id="${escapeHtml(r.title_id || '')}" data-title-name="${escapeHtml(r.title_name || '')}">
-              <i class="bi bi-search"></i> Search torrents
+              <i class="bi bi-search"></i> Search downloads
             </button>
             <button class="btn btn-outline-danger delete-request-btn" data-request-id="${escapeHtml(String(r.id || ''))}" title="Delete request">
               <i class="bi bi-trash"></i>
@@ -270,7 +320,7 @@
     }
   }
 
-  async function searchTorrentsForRequest(titleId, titleName) {
+  async function searchDownloadsForRequest(titleId, titleName) {
     const modalEl = document.getElementById('requestTorrentSearchModal');
     const statusEl = document.getElementById('requestTorrentSearchStatus');
     const bodyEl = document.getElementById('requestTorrentSearchResults');
@@ -293,17 +343,7 @@
     statusEl.textContent = `Found ${results.length} results.`;
     results.forEach(item => {
       const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${escapeHtml(item.title || '-')}</td>
-        <td>${formatBytes(item.size)}</td>
-        <td>${escapeHtml(String(item.seeders ?? '-'))}</td>
-        <td>${escapeHtml(String(item.leechers ?? '-'))}</td>
-        <td>
-          <button class="btn btn-sm btn-warning queue-torrent-btn" data-download-url="${escapeHtml(item.download_url || '')}" data-title="${escapeHtml(item.title || '')}">
-            Queue
-          </button>
-        </td>
-      `;
+      tr.innerHTML = buildRequestDownloadSearchRow(item);
       bodyEl.appendChild(tr);
     });
   }
@@ -315,7 +355,7 @@
     const titleId = btn.getAttribute('data-title-id');
     const titleName = btn.getAttribute('data-title-name');
     if (!titleId) return;
-    await searchTorrentsForRequest(titleId, titleName);
+    await searchDownloadsForRequest(titleId, titleName);
   });
 
   document.addEventListener('click', async (e) => {
@@ -342,16 +382,18 @@
 
   document.addEventListener('click', async (e) => {
     if (!isAdmin) return;
-    const btn = e.target.closest('.queue-torrent-btn');
+    const btn = e.target.closest('.queue-download-btn');
     if (!btn) return;
     const downloadUrl = btn.getAttribute('data-download-url');
     const title = btn.getAttribute('data-title');
+    const protocol = btn.getAttribute('data-protocol');
     if (!downloadUrl) return;
     btn.setAttribute('disabled', 'true');
     try {
       const data = await apiPost('/api/downloads/queue', {
         download_url: downloadUrl,
         title: title,
+        protocol: protocol,
         update_only: false,
       });
       // best-effort feedback in modal header
@@ -362,10 +404,10 @@
     }
   });
 
-  if (!isAdmin) {
-    document.getElementById('requestSearchBox')?.addEventListener('input', handleUserSearchInput);
-    document.getElementById('submitRequestBtn')?.addEventListener('click', submitRequest);
-  } else {
+  document.getElementById('requestSearchBox')?.addEventListener('input', handleUserSearchInput);
+  document.getElementById('submitRequestBtn')?.addEventListener('click', submitRequest);
+
+  if (isAdmin) {
     document.getElementById('refreshRequestsBtn')?.addEventListener('click', refreshAdminRequests);
     document.getElementById('adminSearchBox')?.addEventListener('input', renderAdminRequestsTable);
     refreshAdminRequests();

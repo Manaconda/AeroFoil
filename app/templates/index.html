@@ -4,6 +4,7 @@
 {% block content %}
 {% include 'nav.html' %}
 <div id="content" class="container-fluid mt-3">
+    <div id="libraryAlert" class="alert d-none mb-3" role="alert"></div>
     <div class="grid-container mt-2 mb-3 discover-collapsed" id="discoverSection">
         <div class="d-flex gap-3 align-items-stretch mt-2 py-3 discover-columns">
             <div class="flex-fill">
@@ -50,7 +51,7 @@
         </div>
     </div>
 
-    <div class="row gy-2 gx-3 align-items-center justify-content-md-center mb-3">
+    <div class="row gy-2 gx-3 align-items-center justify-content-md-center mb-3" id="libraryFiltersRow">
 
         <div class="col-auto">
             <div class="btn-group dropdown-center" role="group">
@@ -141,7 +142,7 @@
         {% if current_user.is_admin or admin_account_created == false %}
         <div class="col-auto">
             <div class="input-group">
-                <input type="text" id="torrentSearchInput" class="form-control" placeholder="Search torrents...">
+                <input type="text" id="torrentSearchInput" class="form-control" placeholder="Search downloads...">
                 <button class="btn btn-warning" type="button" id="torrentSearchBtn">Search</button>
             </div>
         </div>
@@ -241,6 +242,22 @@
     </div>
 </div>
 
+<div class="modal fade" id="detailsDeleteConfirmModal" tabindex="-1" aria-labelledby="detailsDeleteConfirmModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="detailsDeleteConfirmModalLabel">Confirm delete</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="detailsDeleteConfirmModalBody">...</div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="detailsDeleteConfirmBtn">Delete</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Game Info Modal -->
 <div class="modal fade" id="gameInfoModal" tabindex="-1" aria-labelledby="gameInfoModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
@@ -309,10 +326,10 @@
 
 {% if current_user.is_admin or admin_account_created == false %}
 <div class="modal fade" id="torrentSearchModal" tabindex="-1" aria-labelledby="torrentSearchModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
         <div class="modal-content">
             <div class="modal-header">
-                <h1 class="modal-title fs-5" id="torrentSearchModalLabel">Torrent search results</h1>
+                <h1 class="modal-title fs-5" id="torrentSearchModalLabel">Download search results</h1>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
@@ -322,9 +339,18 @@
                         <thead>
                             <tr>
                                 <th scope="col">Title</th>
+                                <th scope="col">Indexer</th>
+                                {% if download_ui_visibility.show_protocol_column %}
+                                <th scope="col">Protocol</th>
+                                {% endif %}
+                                {% if download_ui_visibility.show_usenet_columns %}
+                                <th scope="col">Age</th>
+                                {% endif %}
                                 <th scope="col">Size</th>
+                                {% if download_ui_visibility.show_torrent_columns %}
                                 <th scope="col">Seeders</th>
                                 <th scope="col">Leechers</th>
+                                {% endif %}
                                 <th scope="col">Action</th>
                             </tr>
                         </thead>
@@ -355,8 +381,17 @@
     const SEARCH_DEBOUNCE_MS = 250;
     const canManageDownloads = {{ 'true' if current_user.is_admin or admin_account_created == false else 'false' }};
     const canManageManualTitleInfo = {{ 'true' if current_user.is_admin or admin_account_created == false else 'false' }};
+    const downloadUiVisibility = {{ download_ui_visibility|tojson }};
     let gameInfoCurrentTitleId = '';
     let gameInfoCurrentGame = null;
+    let currentDetailsContext = null;
+
+    function showLibraryAlert(message, type = 'info') {
+        const alertBox = $('#libraryAlert');
+        alertBox.removeClass('d-none alert-info alert-success alert-warning alert-danger');
+        alertBox.addClass(`alert-${type}`);
+        alertBox.text(message || '');
+    }
 
     function buildTitlesQuery() {
         const params = new URLSearchParams();
@@ -429,7 +464,16 @@
         });
     }
 
-    function refreshGames(resetPage = false) {
+    function scrollToResults() {
+        const target = document.getElementById('libraryFiltersRow') || document.getElementById('gridContainer');
+        if (!target) return;
+        const top = target.getBoundingClientRect().top;
+        if (top > 24) {
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }
+
+    function refreshGames(resetPage = false, scrollToGrid = false) {
         if (resetPage) {
             currentPage = 1;
         }
@@ -441,6 +485,9 @@
                 }
                 populateGenreDropdown();
                 renderGames();
+                if (scrollToGrid) {
+                    scrollToResults();
+                }
             })
             .catch(() => {});
     }
@@ -600,18 +647,6 @@
         // Sorting is handled server-side via /api/titles.
     }
 
-    function shouldShowDiscovery() {
-        const searchText = ($('#textFilter').val() || '').trim();
-        if (searchText) return false;
-        return (
-            activeTypeFilters.size === 0 &&
-            activeOwnershipFilters.size === 0 &&
-            activeUpdateFilters.size === 0 &&
-            activeCompletionFilters.size === 0 &&
-            activeRecognitionFilters.size === 0
-        );
-    }
-
     function hashStringToInt32(str) {
         // FNV-1a 32-bit
         let h = 0x811c9dc5;
@@ -627,36 +662,6 @@
         const div = document.createElement('div');
         div.textContent = text ?? '';
         return div.innerHTML;
-    }
-
-    function appendTorrentSearchRow(target, item, options = {}) {
-        const row = $('<tr></tr>');
-        const titleText = item && item.title ? String(item.title) : '-';
-        const seeders = (item && item.seeders !== undefined && item.seeders !== null) ? String(item.seeders) : '-';
-        const leechers = (item && item.leechers !== undefined && item.leechers !== null) ? String(item.leechers) : '-';
-
-        row.append($('<td></td>').text(titleText));
-        row.append($('<td></td>').text(formatBytes(item ? item.size : 0)));
-        row.append($('<td></td>').text(seeders));
-        row.append($('<td></td>').text(leechers));
-
-        const actionCell = $('<td></td>');
-        const button = $('<button type="button" class="btn btn-sm btn-warning queue-torrent-btn"></button>');
-        button.text(options.buttonLabel || 'Queue');
-        button.attr('data-download-url', String((item && item.download_url) || ''));
-        button.attr('data-title', String((item && item.title) || ''));
-        if (options.titleId !== undefined && options.titleId !== null) {
-            button.attr('data-title-id', String(options.titleId));
-        }
-        if (options.updateOnly) {
-            button.attr('data-update-only', 'true');
-        }
-        if (options.expectedVersion !== undefined && options.expectedVersion !== null) {
-            button.attr('data-expected-version', String(options.expectedVersion));
-        }
-        actionCell.append(button);
-        row.append(actionCell);
-        target.append(row);
     }
 
     function renderDiscoverRow(containerId, items) {
@@ -702,13 +707,14 @@
         const wrapper = document.getElementById('discoverSection');
         if (!wrapper) return;
 
-        if (!shouldShowDiscovery() || !discoverySections) {
+        const newest = discoverySections?.newest || [];
+        const recommended = discoverySections?.recommended || [];
+        if (!newest.length && !recommended.length) {
             wrapper.classList.add('discover-collapsed');
             return;
         }
+
         wrapper.classList.remove('discover-collapsed');
-        const newest = discoverySections.newest || [];
-        const recommended = discoverySections.recommended || [];
 
         renderDiscoverRow('newlyAddedRow', newest);
         renderDiscoverRow('recommendedRow', recommended);
@@ -843,8 +849,11 @@
 
                     if (game.version !== undefined && !game.version.length && Array.isArray(game.version)){
                         versionBadge.attr("data-bs-title", "Version v0")
-                    } else if (game.version !== undefined && game.version.length) {
-                        versionBadge.attr("data-bs-title", "Version v" + game.version)
+                    } else {
+                        const displayVersion = getDisplayVersion(game);
+                        if (displayVersion !== '-') {
+                            versionBadge.attr("data-bs-title", "Version " + displayVersion)
+                        }
                     }
                 }
                 statusIcons.append(versionBadge);
@@ -986,16 +995,7 @@
         paginatedGames.forEach(game => {
             const title = game.title_id_name || game.name || game.title_id || game.app_id;
             const subtitle = `${game.title_id || ''}`.trim();
-            const versionText = (() => {
-                if (Array.isArray(game.version) && game.version.length) {
-                    const latest = game.version[game.version.length - 1];
-                    return `v${latest.version}`;
-                }
-                if (game.version !== undefined && !Array.isArray(game.version)) {
-                    return `v${game.version}`;
-                }
-                return '-';
-            })();
+            const versionText = getDisplayVersion(game);
             const statusBadges = [];
             if (game.owned !== undefined) {
                 statusBadges.push(`<span class="badge text-bg-${game.owned ? 'success' : 'warning'}">Owned</span>`);
@@ -1051,6 +1051,105 @@
             case 5: return 6; // 8 columns
             default: return 4; // default to 3 columns
         }
+    }
+
+    function getDisplayVersion(game) {
+        if (Array.isArray(game?.version) && game.version.length) {
+            const latest = game.version[game.version.length - 1];
+            if (latest && latest.version !== undefined && latest.version !== null) {
+                return `v${latest.version}`;
+            }
+        }
+        if (game?.version !== undefined && game?.version !== null && !Array.isArray(game.version)) {
+            return `v${game.version}`;
+        }
+        if (game?.app_version !== undefined && game?.app_version !== null && String(game.app_version).length) {
+            return `v${game.app_version}`;
+        }
+        return '-';
+    }
+
+    function getProtocolLabel(protocol) {
+        const value = String(protocol || '').trim().toLowerCase();
+        if (value === 'usenet') return 'NZB';
+        if (value === 'torrent') return 'Torrent';
+        return value || '-';
+    }
+
+    function buildDownloadSearchRow(item, actionLabel, extraData = {}) {
+        const row = $('<tr></tr>');
+        row.append($('<td></td>').text(item?.title || '-'));
+        row.append($('<td></td>').text(item?.indexer || '-'));
+        if (downloadUiVisibility.show_protocol_column) {
+            row.append($('<td></td>').text(getProtocolLabel(item?.protocol)));
+        }
+        if (downloadUiVisibility.show_usenet_columns) {
+            row.append($('<td></td>').text(item?.age_label || '-'));
+        }
+        row.append($('<td></td>').text(formatBytes(item?.size)));
+        if (downloadUiVisibility.show_torrent_columns) {
+            row.append($('<td></td>').text(item?.seeders ?? '-'));
+            row.append($('<td></td>').text(item?.leechers ?? '-'));
+        }
+        const actionCell = $('<td></td>');
+        const button = $('<button type="button" class="btn btn-sm btn-warning queue-download-btn"></button>');
+        button.text(actionLabel);
+        button.attr('data-download-url', String(item?.download_url || ''));
+        button.attr('data-title', String(item?.title || ''));
+        button.attr('data-protocol', String(item?.protocol || ''));
+        Object.entries(extraData).forEach(([key, value]) => {
+            button.attr(`data-${key}`, String(value ?? ''));
+        });
+        actionCell.append(button);
+        row.append(actionCell);
+        return row;
+    }
+
+    function setDetailsDownloadStatus(message, tone = 'muted') {
+        $('#detailsDownloadStatus')
+            .text(message || '')
+            .removeClass('text-danger text-success text-muted')
+            .addClass(`text-${tone}`);
+    }
+
+    function showTorrentSearchModal(statusMessage = 'Searching Prowlarr...') {
+        $('#torrentSearchStatus').text(statusMessage);
+        $('#torrentSearchResults').empty();
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('torrentSearchModal')).show();
+    }
+
+    function renderDownloadSearchResults(result, actionLabel, buildExtraData) {
+        if (!result['success']) {
+            $('#torrentSearchStatus').text(result['message'] || 'Search failed.');
+            return;
+        }
+        const results = result['results'] || [];
+        if (!results.length) {
+            $('#torrentSearchStatus').text('No results found.');
+            return;
+        }
+        $('#torrentSearchStatus').text(`Found ${results.length} results.`);
+        results.forEach(item => {
+            const row = buildDownloadSearchRow(item, actionLabel, buildExtraData(item));
+            $('#torrentSearchResults').append(row);
+        });
+        setDetailsDownloadStatus('');
+    }
+
+    function runDetailsDownloadSearch({ button, statusMessage = 'Searching Prowlarr...', request, actionLabel, buildExtraData }) {
+        button.prop('disabled', true);
+        setDetailsDownloadStatus(statusMessage);
+        showTorrentSearchModal();
+        request()
+            .done(function (result) {
+                renderDownloadSearchResults(result, actionLabel, buildExtraData);
+            })
+            .fail(function () {
+                $('#torrentSearchStatus').text('Search failed.');
+            })
+            .always(function () {
+                button.prop('disabled', false);
+            });
     }
 
     function getCardSizeRangeForView(view) {
@@ -1345,8 +1444,8 @@
         });
     }
 
-    function recomputeFilteredGames() {
-        refreshGames(true);
+    function recomputeFilteredGames(scrollToGrid = false) {
+        refreshGames(true, scrollToGrid);
     }
 
     function loadFiltersFromStorage() {
@@ -1424,7 +1523,7 @@
             saveGenreToStorage();
             updateGenreButtonLabel();
             renderActiveFilters();
-            recomputeFilteredGames();
+            recomputeFilteredGames(true);
         });
 
         // Event listeners for items per page dropdown
@@ -1521,16 +1620,18 @@
                     }
                     $('#torrentSearchStatus').text(`Found ${results.length} results.`);
                     results.forEach(item => {
-                        appendTorrentSearchRow($('#torrentSearchResults'), item, { buttonLabel: 'Queue' });
+                        const row = buildDownloadSearchRow(item, 'Queue');
+                        $('#torrentSearchResults').append(row);
                     });
                 });
             });
 
-        $(document).on('click', '.queue-torrent-btn', function () {
+        $(document).on('click', '.queue-download-btn', function () {
             const button = $(this);
             const downloadUrl = button.data('download-url');
             const title = button.data('title');
             const titleId = button.data('title-id');
+            const protocol = button.data('protocol');
             const updateOnly = button.data('update-only') === true || button.data('update-only') === 'true';
             const expectedVersion = button.data('expected-version');
             if (!downloadUrl) {
@@ -1545,6 +1646,7 @@
                     download_url: downloadUrl,
                     title: title,
                     title_id: titleId,
+                    protocol: protocol,
                     update_only: updateOnly,
                     expected_version: expectedVersion
                 }),
@@ -1612,7 +1714,6 @@
             });
         });
     }
-
     function buildDetailsSkeletonRows(rowCount = 4) {
         return Array.from({ length: rowCount }, () => `
             <tr>
@@ -1620,8 +1721,103 @@
                 <td><span class="details-skeleton-line details-skeleton-cell details-skeleton-cell-status"></span></td>
                 <td><span class="details-skeleton-line details-skeleton-cell details-skeleton-cell-size"></span></td>
                 <td><span class="details-skeleton-line details-skeleton-cell details-skeleton-cell-date"></span></td>
+                <td class="text-end"></td>
             </tr>
         `).join('');
+    }
+
+    function setDetailsStatus(message, tone = 'muted') {
+        const status = $('#detailsDownloadStatus');
+        status.text(message || '');
+        status.removeClass('text-muted text-danger text-success').addClass(`text-${tone || 'muted'}`);
+    }
+
+    const detailsDeleteConfirmModalEl = document.getElementById('detailsDeleteConfirmModal');
+    const detailsDeleteConfirmModal = detailsDeleteConfirmModalEl ? new bootstrap.Modal(detailsDeleteConfirmModalEl) : null;
+    let detailsDeleteAction = null;
+
+    function showDetailsDeleteConfirm(title, message, onConfirm) {
+        if (!detailsDeleteConfirmModal) {
+            return;
+        }
+        detailsDeleteAction = onConfirm;
+        $('#detailsDeleteConfirmModalLabel').text(title);
+        $('#detailsDeleteConfirmModalBody').text(message);
+        $('#detailsDeleteConfirmBtn').prop('disabled', false);
+        detailsDeleteConfirmModal.show();
+    }
+
+    if (detailsDeleteConfirmModalEl) {
+        detailsDeleteConfirmModalEl.addEventListener('hidden.bs.modal', function () {
+            detailsDeleteAction = null;
+            $('#detailsDeleteConfirmBtn').prop('disabled', false);
+        });
+    }
+
+    $('#detailsDeleteConfirmBtn').on('click', function () {
+        if (!detailsDeleteAction) {
+            return;
+        }
+        $(this).prop('disabled', true);
+        detailsDeleteAction();
+    });
+
+    const detailsModalEl = document.getElementById('detailsModal');
+    const detailsModalInstance = detailsModalEl ? bootstrap.Modal.getOrCreateInstance(detailsModalEl) : null;
+
+    function handleSuccessfulDeleteCompletion(message, alertType = 'success') {
+        if (detailsModalInstance) {
+            detailsModalInstance.hide();
+        }
+        gameDetailsCache.clear();
+        return refreshGames(false)
+            .then(() => {
+                if (message) {
+                    showLibraryAlert(message, alertType);
+                }
+            })
+            .catch(() => {
+                if (message) {
+                    showLibraryAlert(message, alertType);
+                }
+            });
+    }
+
+    function executeDetailsDelete(payload, successMessage) {
+        setDetailsStatus('Deleting...', 'muted');
+        $.ajax({
+            url: "/api/manage/delete-library-content",
+            type: 'POST',
+            data: JSON.stringify(payload),
+            contentType: "application/json",
+            success: function (result) {
+                if (result && result['success']) {
+                    handleSuccessfulDeleteCompletion(successMessage, 'success');
+                    return;
+                }
+                const errors = (result && result['errors']) ? result['errors'].join('; ') : 'Delete failed.';
+                setDetailsStatus(errors, 'danger');
+            },
+            error: function (xhr) {
+                const response = xhr && xhr.responseJSON ? xhr.responseJSON : null;
+                if (response && response['mutated']) {
+                    const warnings = (response['errors'] || []).join('; ');
+                    const warningMessage = warnings
+                        ? `${successMessage} Some files failed: ${warnings}`
+                        : successMessage;
+                    handleSuccessfulDeleteCompletion(warningMessage, 'warning');
+                    return;
+                }
+                const errors = (response && response['errors']) ? response['errors'].join('; ') : 'Delete failed.';
+                setDetailsStatus(errors, 'danger');
+            },
+            complete: function () {
+                $('#detailsDeleteConfirmBtn').prop('disabled', false);
+                if (detailsDeleteConfirmModal) {
+                    detailsDeleteConfirmModal.hide();
+                }
+            }
+        });
     }
 
     function renderDetails(game) {
@@ -1630,10 +1826,9 @@
             $('#detailsSubtitle').text('');
             $('#detailsMeta').empty();
             $('#detailsVersions').empty();
-            $('#detailsDownloadStatus').text('');
+            setDetailsStatus('', 'muted');
             return;
         }
-
         const baseTitle = game.title_id_name || game.title_id || game.app_id;
         const dlcName = game.name || game.app_id;
         const title = (String(game.app_type || '').toUpperCase() === 'DLC' && dlcName && dlcName !== baseTitle)
@@ -1657,7 +1852,7 @@
         if (game.has_latest_version !== undefined) {
             metaItems.push(`<span class="badge text-bg-${game.has_latest_version ? 'success' : 'warning'}">Up to date: ${game.has_latest_version ? 'Yes' : 'No'}</span>`);
         }
-        if (game.has_all_dlcs !== undefined && dlcList.length > 0) {
+        if (game.has_all_dlcs !== undefined && (dlcList.length > 0 || game.app_type === 'BASE')) {
             metaItems.push(`<span class="badge text-bg-${game.has_all_dlcs ? 'success' : 'warning'}">All DLC: ${game.has_all_dlcs ? 'Yes' : 'No'}</span>`);
         }
         if (game.size !== undefined) {
@@ -1666,24 +1861,63 @@
         $('#detailsMeta').html(metaItems.join(' '));
 
         const versions = Array.isArray(game.version) ? game.version : [];
-        const versionRows = versions.map(version => `
-            <tr>
-                <td>v${version.version}</td>
-                <td>${version.owned ? 'Owned' : 'Missing'}</td>
-                <td>${(version.size !== undefined && version.size !== null) ? formatBytes(version.size) : '-'}</td>
-                <td>${version.release_date || 'Unknown'}</td>
-            </tr>
-        `).join('');
-
+        const canDeleteRows = canManageDownloads && versions.some(version => version && version.deletable);
+        const versionRows = versions.map(version => {
+            const actionCell = canDeleteRows
+                ? `
+                    <td class="text-end">
+                        ${version.deletable
+                            ? `<button type="button" class="btn btn-outline-danger btn-sm details-delete-version-btn"
+                                    data-app-id="${escapeHtml(String(version.app_id || game.app_id || ''))}"
+                                    data-app-type="${escapeHtml(String(version.app_type || game.app_type || ''))}"
+                                    data-version="${escapeHtml(String(version.version ?? ''))}"
+                                    data-item-name="${escapeHtml(String(game.app_type === 'DLC' ? (game.name || title) : title))}">
+                                    <i class="bi bi-trash"></i>
+                               </button>`
+                            : ''}
+                    </td>
+                `
+                : '';
+            return `
+                <tr>
+                    <td>v${version.version}</td>
+                    <td>${version.owned ? 'Owned' : 'Missing'}</td>
+                    <td>${(version.size !== undefined && version.size !== null) ? formatBytes(version.size) : '-'}</td>
+                    <td>${version.release_date || 'Unknown'}</td>
+                    ${actionCell}
+                </tr>
+            `;
+        }).join('');
         const missingVersions = versions.filter(version => !version.owned);
         const latestMissing = missingVersions.length ? missingVersions[missingVersions.length - 1] : null;
-        const actionRow = (canManageDownloads && latestMissing)
+        const titleQuery = game.title_id_name || game.name || game.title_id || '';
+        const updateButton = latestMissing
             ? `
-                <div class="mt-3">
                     <button type="button" class="btn btn-warning btn-sm manual-download-btn"
                         data-title-id="${game.title_id}" data-version="${latestMissing.version}">
-                        <i class="bi bi-cloud-arrow-down"></i> Search & download v${latestMissing.version}
+                        <i class="bi bi-cloud-arrow-down"></i> Search updates
                     </button>
+            `
+            : '';
+        const baseButton = game.has_base === false
+            ? `
+                    <button type="button" class="btn btn-warning btn-sm manual-base-download-btn"
+                        data-title-id="${game.title_id}" data-title-query="${titleQuery}">
+                        <i class="bi bi-box-seam"></i> Search base game
+                    </button>
+            `
+            : '';
+        const cascadeDeleteButton = (canManageDownloads && game.app_type === 'BASE' && game.has_owned_content)
+            ? `
+                    <button type="button" class="btn btn-danger btn-sm details-delete-cascade-btn"
+                        data-title-id="${escapeHtml(String(game.title_id || ''))}"
+                        data-title-name="${escapeHtml(String(title || 'this title'))}">
+                        <i class="bi bi-trash"></i> Delete game, updates, and DLC
+                    </button>
+            `
+            : '';
+        const customSearchRow = latestMissing
+            ? `
                     <div class="input-group input-group-sm mt-2 manual-search-group">
                         <input type="text" class="form-control manual-search-input" placeholder="Custom search terms">
                         <button type="button" class="btn btn-outline-secondary manual-search-btn"
@@ -1691,22 +1925,53 @@
                             Search files
                         </button>
                     </div>
+            `
+            : '';
+        const actionRow = (canManageDownloads && (updateButton || baseButton || cascadeDeleteButton))
+            ? `
+                <div class="mt-3">
+                    <div class="d-flex flex-wrap gap-2">
+                        ${baseButton}
+                        ${updateButton}
+                        ${cascadeDeleteButton}
+                    </div>
+                    ${customSearchRow}
                 </div>
             `
             : '';
-
+        const canSearchDlcRows = canManageDownloads && dlcList.some(dlc => {
+            const rawName = String((dlc && dlc.name) || game.title_id_name || game.title_id || '').trim();
+            return !(dlc && dlc.owned) && Boolean(rawName);
+        });
         const dlcRows = dlcList.map(dlc => {
             const name = escapeHtml(dlc.name || dlc.app_id || '-');
             const status = dlc.owned ? 'Owned' : 'Missing';
             const statusClass = dlc.owned ? 'text-bg-success' : 'text-bg-warning';
             const latest = dlc.latest_version ? `v${dlc.latest_version}` : '-';
             const owned = dlc.owned_version ? `v${dlc.owned_version}` : '-';
+            const rawName = String(dlc.name || game.title_id_name || game.title_id || '').trim();
+            const dlcSearchQuery = rawName ? `${rawName} DLC` : '';
+            const actionCell = canSearchDlcRows
+                ? `
+                    <td class="text-end">
+                        ${!dlc.owned && dlcSearchQuery
+                            ? `<button type="button" class="btn btn-outline-warning btn-sm details-dlc-search-btn"
+                                    data-title-id="${escapeHtml(String(game.title_id || ''))}"
+                                    data-query="${escapeHtml(dlcSearchQuery)}"
+                                    data-label="${escapeHtml(rawName || 'DLC')}">
+                                    <i class="bi bi-cloud-arrow-down"></i>
+                               </button>`
+                            : ''}
+                    </td>
+                `
+                : '';
             return `
                 <tr>
                     <td>${name}</td>
                     <td><span class="badge ${statusClass}">${status}</span></td>
                     <td>${owned}</td>
                     <td>${latest}</td>
+                    ${actionCell}
                 </tr>
             `;
         }).join('');
@@ -1723,6 +1988,7 @@
                                      <th scope="col">Status</th>
                                      <th scope="col">Size</th>
                                      <th scope="col">Release date</th>
+                                     ${canDeleteRows ? '<th scope="col" class="text-end">Actions</th>' : ''}
                                  </tr>
                              </thead>
                             <tbody>
@@ -1745,6 +2011,7 @@
                                     <th scope="col">Status</th>
                                     <th scope="col">Owned</th>
                                     <th scope="col">Latest</th>
+                                    ${canSearchDlcRows ? '<th scope="col" class="text-end">Actions</th>' : ''}
                                 </tr>
                             </thead>
                             <tbody>
@@ -1792,7 +2059,7 @@
                 </div>
             `);
         }
-        $('#detailsDownloadStatus').text('');
+        setDetailsStatus('', 'muted');
     }
 
     function showDetailsLoading() {
@@ -1814,6 +2081,7 @@
                         <th scope="col">Status</th>
                         <th scope="col">Size</th>
                         <th scope="col">Release date</th>
+                        <th scope="col" class="text-end"></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1822,15 +2090,15 @@
             </table>
             <div class="visually-hidden" role="status">Loading content details...</div>
         `);
-        $('#detailsDownloadStatus').text('');
+        setDetailsStatus('', 'muted');
     }
 
-    const detailsModal = document.getElementById('detailsModal');
-    if (detailsModal) {
-        detailsModal.addEventListener('show.bs.modal', event => {
+    if (detailsModalEl) {
+        detailsModalEl.addEventListener('show.bs.modal', event => {
             const button = event.relatedTarget;
             const appId = button.getAttribute('data-bs-app-id');
             const appType = button.getAttribute('data-bs-app-type');
+            currentDetailsContext = { appId: appId, appType: appType };
             const initial = findGameByKey(appId, appType);
             if (initial) {
                 renderDetails(initial);
@@ -1841,7 +2109,50 @@
                 .then(game => renderDetails(game))
                 .catch(() => renderDetails(null));
         });
+        detailsModalEl.addEventListener('hidden.bs.modal', () => {
+            currentDetailsContext = null;
+            setDetailsStatus('', 'muted');
+        });
     }
+
+    $(document).on('click', '.details-delete-cascade-btn', function () {
+        const titleId = String($(this).data('title-id') || '').trim();
+        const titleName = String($(this).data('title-name') || 'this title').trim();
+        if (!titleId) {
+            return;
+        }
+        showDetailsDeleteConfirm(
+            'Delete game, updates, and DLC',
+            `Delete the base game and all owned updates and DLC for ${titleName}?`,
+            function () {
+                executeDetailsDelete(
+                    { scope: 'title_cascade', title_id: titleId },
+                    'Deleted base game content.'
+                );
+            }
+        );
+    });
+
+    $(document).on('click', '.details-delete-version-btn', function () {
+        const appId = String($(this).data('app-id') || '').trim();
+        const appType = String($(this).data('app-type') || '').trim();
+        const version = $(this).data('version');
+        const itemName = String($(this).data('item-name') || 'this entry').trim();
+        if (!appId || !appType || version === undefined) {
+            return;
+        }
+        const label = (String(appType).toUpperCase() === 'DLC') ? 'DLC' : 'update';
+        showDetailsDeleteConfirm(
+            `Delete ${label}`,
+            `Delete ${label} v${version} for ${itemName}?`,
+            function () {
+                executeDetailsDelete(
+                    { scope: 'app_version', app_id: appId, app_type: appType, version: version },
+                    `Deleted ${label} v${version}.`
+                );
+            }
+        );
+    });
 
     function findGameByTitleId(titleId) {
         const tid = (titleId || '').trim().toUpperCase();
@@ -2033,41 +2344,46 @@
         if (!titleId || version === undefined) {
             return;
         }
-        button.prop('disabled', true);
-        $('#detailsDownloadStatus').text('Searching Prowlarr...').removeClass('text-danger text-success').addClass('text-muted');
-        $('#torrentSearchStatus').text('Searching Prowlarr...');
-        $('#torrentSearchResults').empty();
-        const modal = new bootstrap.Modal(document.getElementById('torrentSearchModal'));
-        modal.show();
-        $.ajax({
-            url: "/api/downloads/manual-search",
-            type: 'POST',
-            data: JSON.stringify({ title_id: titleId, version: version }),
-            contentType: "application/json",
-            success: function (result) {
-                if (!result['success']) {
-                    $('#torrentSearchStatus').text(result['message'] || 'Search failed.');
-                    return;
-                }
-                const results = result['results'] || [];
-                if (!results.length) {
-                    $('#torrentSearchStatus').text('No results found.');
-                    return;
-                }
-                $('#torrentSearchStatus').text(`Found ${results.length} results.`);
-                results.forEach(item => {
-                    appendTorrentSearchRow($('#torrentSearchResults'), item, {
-                        buttonLabel: 'Queue update',
-                        titleId: (titleId || ''),
-                        updateOnly: true,
-                        expectedVersion: version
-                    });
+        runDetailsDownloadSearch({
+            button,
+            request: function () {
+                return $.ajax({
+                    url: "/api/downloads/manual-search",
+                    type: 'POST',
+                    data: JSON.stringify({ title_id: titleId, version: version }),
+                    contentType: "application/json",
                 });
-                $('#detailsDownloadStatus').text('');
             },
-            complete: function () {
-                button.prop('disabled', false);
-            }
+            actionLabel: 'Queue update',
+            buildExtraData: function () {
+                return {
+                    'title-id': titleId || '',
+                    'update-only': 'true',
+                    'expected-version': version,
+                };
+            },
+        });
+    });
+
+    $(document).on('click', '.manual-base-download-btn', function () {
+        const button = $(this);
+        const titleId = button.data('title-id');
+        const query = String(button.data('title-query') || '').trim();
+        if (!query) {
+            return;
+        }
+        runDetailsDownloadSearch({
+            button,
+            request: function () {
+                return $.getJSON(`/api/downloads/search?query=${encodeURIComponent(query)}&apply_settings=1&extra_blacklist=update`);
+            },
+            actionLabel: 'Queue download',
+            buildExtraData: function () {
+                return {
+                    'title-id': titleId || '',
+                    'update-only': 'false',
+                };
+            },
         });
     });
 
@@ -2082,36 +2398,43 @@
             input.focus();
             return;
         }
-        button.prop('disabled', true);
-        $('#detailsDownloadStatus').text('Searching Prowlarr...').removeClass('text-danger text-success').addClass('text-muted');
-        $('#torrentSearchStatus').text('Searching Prowlarr...');
-        $('#torrentSearchResults').empty();
-        const modal = new bootstrap.Modal(document.getElementById('torrentSearchModal'));
-        modal.show();
-        $.getJSON(`/api/downloads/search?query=${encodeURIComponent(query)}`, function (result) {
-            if (!result['success']) {
-                $('#torrentSearchStatus').text(result['message'] || 'Search failed.');
-                return;
-            }
-            const results = result['results'] || [];
-            if (!results.length) {
-                $('#torrentSearchStatus').text('No results found.');
-                return;
-            }
-            $('#torrentSearchStatus').text(`Found ${results.length} results.`);
-            results.forEach(item => {
-                appendTorrentSearchRow($('#torrentSearchResults'), item, {
-                    buttonLabel: 'Queue update',
-                    titleId: (titleId || ''),
-                    updateOnly: true,
-                    expectedVersion: version
-                });
-            });
-            $('#detailsDownloadStatus').text('');
-        }).fail(function () {
-            $('#torrentSearchStatus').text('Search failed.');
-        }).always(function () {
-            button.prop('disabled', false);
+        runDetailsDownloadSearch({
+            button,
+            request: function () {
+                return $.getJSON(`/api/downloads/search?query=${encodeURIComponent(query)}`);
+            },
+            actionLabel: 'Queue update',
+            buildExtraData: function () {
+                return {
+                    'title-id': titleId || '',
+                    'update-only': 'true',
+                    'expected-version': version,
+                };
+            },
+        });
+    });
+
+    $(document).on('click', '.details-dlc-search-btn', function () {
+        const button = $(this);
+        const titleId = String(button.data('title-id') || '').trim();
+        const query = String(button.data('query') || '').trim();
+        const label = String(button.data('label') || 'DLC').trim();
+        if (!query) {
+            return;
+        }
+        runDetailsDownloadSearch({
+            button,
+            statusMessage: `Searching Prowlarr for ${label}...`,
+            request: function () {
+                return $.getJSON(`/api/downloads/search?query=${encodeURIComponent(query)}&apply_settings=1`);
+            },
+            actionLabel: 'Queue DLC',
+            buildExtraData: function () {
+                return {
+                    'title-id': titleId || '',
+                    'update-only': 'false',
+                };
+            },
         });
     });
 
@@ -2119,7 +2442,7 @@
     function filterBySearchText(attributeText) {
         const text = (attributeText || '').trim();
         localStorage.setItem('searchTerm', text);
-        recomputeFilteredGames();
+        recomputeFilteredGames(true);
     }
 
     // Set to store active filters
@@ -2200,7 +2523,7 @@
 
     // Function to apply filters and show/hide game cards with animation
     function applyFilters() {
-        recomputeFilteredGames();
+        recomputeFilteredGames(true);
     }
 
     // $('#btnApplyFilters').on('click', function () {

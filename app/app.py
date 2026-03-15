@@ -23,8 +23,8 @@ from datetime import timedelta, datetime
 flask.cli.show_server_banner = lambda *args: None
 from app.constants import *
 from app.settings import *
-from app.downloads import ProwlarrClient, test_torrent_client, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads
-from app.library import organize_library, delete_older_updates, delete_duplicates
+from app.downloads import ProwlarrClient, filter_results, test_download_client, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads, get_download_ui_visibility, filter_download_search_results, remove_pending_download
+from app.library import organize_library, delete_older_updates, delete_duplicates, delete_library_content, delete_orphaned_addons
 from app.db import *
 from app.shop import *
 from app.auth import *
@@ -95,6 +95,46 @@ def _release_process_memory():
             _malloc_trim(0)
         except Exception:
             pass
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _app_has_deletable_files(app):
+    if app is None or getattr(app, 'id', None) is None:
+        return False
+
+    for file_entry in list(getattr(app, 'files', []) or []):
+        if file_entry is None:
+            continue
+        filepath = str(getattr(file_entry, 'filepath', '') or '').strip()
+        if not filepath:
+            continue
+        linked_apps = [linked for linked in list(getattr(file_entry, 'apps', []) or []) if linked is not None]
+        foreign_apps = [linked for linked in linked_apps if getattr(linked, 'id', None) != getattr(app, 'id', None)]
+        if not foreign_apps:
+            return True
+    return False
+
+
+def _build_deletable_version_map(apps):
+    deletable = {}
+    for app in apps or []:
+        key = (
+            str(getattr(app, 'app_id', '') or '').strip().upper(),
+            str(getattr(app, 'app_type', '') or '').strip().upper(),
+            str(getattr(app, 'app_version', '') or '').strip(),
+        )
+        if not all(key):
+            continue
+        deletable[key] = bool(deletable.get(key)) or (
+            bool(getattr(app, 'owned', False)) and _app_has_deletable_files(app)
+        )
+    return deletable
 
 def _media_variant_dirname(media_kind, size_override=None):
     if media_kind == 'icon':
@@ -736,6 +776,23 @@ def _get_cached_library_genres():
     metadata = _get_cached_titles_metadata()
     return list(metadata.get('genres') or [])
 
+
+def _sort_library_rows_by_title_name(rows, title_name_map, descending=False):
+    title_name_map = title_name_map or {}
+
+    def _sort_key(row):
+        title_id = str(getattr(row, 'title_id', '') or '').strip().upper()
+        app_id = str(getattr(row, 'app_id', '') or '').strip().upper()
+        normalized_name = str(title_name_map.get(title_id) or '').strip()
+        fallback_name = _normalize_library_search_text(title_id or app_id)
+        return (
+            normalized_name or fallback_name,
+            title_id,
+            app_id,
+        )
+
+    return sorted(rows, key=_sort_key, reverse=bool(descending))
+
 def _get_discovery_sections(limit=12):
     try:
         limit = max(1, int(limit))
@@ -976,12 +1033,6 @@ def _build_shop_sections_payload(limit, full_catalog=False):
         .filter(best_files.c.file_id.isnot(None))
         .all()
     )
-
-    def _safe_int(value, default=0):
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
 
     info_cache = {}
 
@@ -1288,12 +1339,13 @@ def _resolve_save_sync_user():
         if user is None or not check_password_hash(user.password, auth.password):
             return None, 'Invalid save sync credentials.', 401
 
-        if bool(getattr(user, 'frozen', False)):
-            message = (getattr(user, 'frozen_message', None) or '').strip() or 'Account is frozen.'
-            return None, message, 403
+    if bool(getattr(user, 'frozen', False)):
+        message = (getattr(user, 'frozen_message', None) or '').strip() or 'Account is frozen.'
+        return None, message, 403
 
-        if not user.has_shop_access():
-            return None, f'User "{auth.username}" does not have access to the shop.', 403
+    if not user.has_shop_access():
+        username = str(getattr(user, 'user', '') or '').strip() or 'unknown'
+        return None, f'User "{username}" does not have access to the shop.', 403
 
     if not bool(getattr(user, 'backup_access', False)):
         return None, 'Backup access is required for save sync.', 403
@@ -2033,7 +2085,7 @@ def _touch_client():
         if uid_value and uid_value != (user.client_uid or ''):
             user.client_uid = uid_value
             updated = True
-        user.last_login_at = datetime.datetime.utcnow()
+        user.last_login_at = utc_now()
         user.last_login_ip = remote or user.last_login_ip
         user.last_login_country = geo.get('country') or user.last_login_country
         user.last_login_country_code = geo.get('country_code') or user.last_login_country_code
@@ -2838,6 +2890,7 @@ def access_shop():
         admin_account_created=admin_account_created(),
         valid_keys=app_settings['titles']['valid_keys'],
         identification_disabled=not app_settings['titles']['valid_keys'],
+        download_ui_visibility=_get_download_template_visibility(),
     )
 
 @access_required('shop')
@@ -2943,7 +2996,8 @@ def downloads_page():
     return render_template(
         'downloads.html',
         title='Downloads',
-        admin_account_created=admin_account_created())
+        admin_account_created=admin_account_created(),
+        download_ui_visibility=_get_download_template_visibility())
 
 @app.route('/upload')
 @access_required('admin')
@@ -2978,7 +3032,8 @@ def requests_page():
     return render_template(
         'requests.html',
         title='Requests',
-        admin_account_created=admin_account_created())
+        admin_account_created=admin_account_created(),
+        download_ui_visibility=_get_download_template_visibility())
 
 
 @app.route('/saves')
@@ -3120,12 +3175,12 @@ def admin_mark_requests_seen_api():
 
     now = None
     try:
-        now = datetime.utcnow()
+        now = utc_now()
     except Exception:
         now = None
 
     try:
-        ts = now or datetime.utcnow()
+        ts = now or utc_now()
 
         if mark_all_open:
             select_stmt = (
@@ -3241,6 +3296,52 @@ def _normalize_download_search_query(text, downloads_settings=None):
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+def _get_download_filter_thresholds(downloads):
+    downloads = downloads or {}
+    torrent_cfg = downloads.get('torrent_client') or {}
+    usenet_cfg = downloads.get('usenet_client') or {}
+    try:
+        min_seeders = int(torrent_cfg.get('min_seeders') or 0)
+    except (TypeError, ValueError):
+        min_seeders = 0
+    try:
+        min_age_minutes = int(usenet_cfg.get('min_age_minutes') or 0)
+    except (TypeError, ValueError):
+        min_age_minutes = 0
+    return max(min_seeders, 0), max(min_age_minutes, 0)
+
+
+def _get_prowlarr_search_limit(prowlarr_cfg):
+    try:
+        search_limit = int((prowlarr_cfg or {}).get('search_limit') or 100)
+    except (TypeError, ValueError):
+        search_limit = 100
+    return max(1, min(search_limit, 500))
+
+
+def _trim_download_search_results(results, limit=50):
+    return [
+        {
+            'title': r.get('title'),
+            'indexer': r.get('indexer'),
+            'size': r.get('size'),
+            'seeders': r.get('seeders'),
+            'leechers': r.get('leechers'),
+            'download_url': r.get('download_url'),
+            'protocol': r.get('protocol'),
+            'age_minutes': r.get('age_minutes'),
+            'age_label': r.get('age_label'),
+        }
+        for r in (results or [])[:limit]
+    ]
+
+
+def _get_download_template_visibility():
+    settings = load_settings()
+    downloads = settings.get('downloads', {})
+    return get_download_ui_visibility(downloads)
+
+
 @app.get('/api/requests/search')
 @access_required('admin')
 def request_prowlarr_search_api():
@@ -3277,22 +3378,16 @@ def request_prowlarr_search_api():
         except (TypeError, ValueError):
             timeout_seconds = 15
         timeout_seconds = max(5, min(timeout_seconds, 180))
+        search_limit = _get_prowlarr_search_limit(prowlarr_cfg)
         client = ProwlarrClient(prowlarr_cfg['url'], prowlarr_cfg['api_key'], timeout_seconds=timeout_seconds)
         results = client.search(
             full_query,
             indexer_ids=prowlarr_cfg.get('indexer_ids') or [],
             categories=prowlarr_cfg.get('categories') or [],
+            limit=search_limit,
         )
-        trimmed = [
-            {
-                'title': r.get('title'),
-                'size': r.get('size'),
-                'seeders': r.get('seeders'),
-                'leechers': r.get('leechers'),
-                'download_url': r.get('download_url'),
-            }
-            for r in (results or [])[:50]
-        ]
+        results = filter_download_search_results(results, downloads)
+        trimmed = _trim_download_search_results(results, limit=50)
         return jsonify({'success': True, 'results': trimmed})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'results': []})
@@ -3894,11 +3989,12 @@ def test_downloads_prowlarr_api():
 @access_required('admin')
 def test_downloads_client_api():
     data = request.json or {}
-    ok, message = test_torrent_client(
+    ok, message = test_download_client(
         client_type=data.get('type', ''),
         url=data.get('url', ''),
         username=data.get('username', ''),
-        password=data.get('password', '')
+        password=data.get('password', ''),
+        api_key=data.get('api_key', '')
     )
     download_path = (data.get('download_path') or '').strip()
     warning = None
@@ -3942,6 +4038,12 @@ def manual_search_update_options():
 def downloads_search():
     query = request.args.get('query', '').strip()
     apply_settings = request.args.get('apply_settings', '').strip() in ('1', 'true', 'yes')
+    extra_blacklist_terms = []
+    for raw_value in request.args.getlist('extra_blacklist'):
+        for term in str(raw_value or '').split(','):
+            normalized = term.strip()
+            if normalized:
+                extra_blacklist_terms.append(normalized)
     if not query:
         return jsonify({'success': False, 'message': 'Missing query.'})
     settings = load_settings()
@@ -3955,6 +4057,7 @@ def downloads_search():
         except (TypeError, ValueError):
             timeout_seconds = 15
         timeout_seconds = max(5, min(timeout_seconds, 180))
+        search_limit = _get_prowlarr_search_limit(prowlarr_cfg)
         full_query = _normalize_download_search_query(query, downloads)
         if apply_settings:
             prefix = _normalize_download_search_query(downloads.get('search_prefix') or '', downloads)
@@ -3968,33 +4071,15 @@ def downloads_search():
             full_query,
             indexer_ids=prowlarr_cfg.get('indexer_ids') or [],
             categories=prowlarr_cfg.get('categories') or [],
+            limit=search_limit,
         )
         if apply_settings:
-            required_terms = [t.lower() for t in (downloads.get('required_terms') or []) if t]
-            blacklist_terms = [t.lower() for t in (downloads.get('blacklist_terms') or []) if t]
-            min_seeders = int(downloads.get('min_seeders') or 0)
-            filtered = []
-            for item in results or []:
-                title = (item.get('title') or '').lower()
-                seeders = item.get('seeders') or 0
-                if min_seeders and seeders < min_seeders:
-                    continue
-                if required_terms and not all(term in title for term in required_terms):
-                    continue
-                if blacklist_terms and any(term in title for term in blacklist_terms):
-                    continue
-                filtered.append(item)
-            results = filtered
-        trimmed = [
-            {
-                'title': r.get('title'),
-                'size': r.get('size'),
-                'seeders': r.get('seeders'),
-                'leechers': r.get('leechers'),
-                'download_url': r.get('download_url')
-            }
-            for r in (results or [])[:50]
-        ]
+            results = filter_download_search_results(
+                results,
+                downloads,
+                blacklist_terms=extra_blacklist_terms,
+            )
+        trimmed = _trim_download_search_results(results, limit=50)
         return jsonify({'success': True, 'results': trimmed})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -4006,6 +4091,7 @@ def downloads_queue():
     download_url = data.get('download_url')
     expected_name = data.get('title')
     title_id = data.get('title_id')
+    protocol = data.get('protocol')
     update_only = bool(data.get('update_only', False))
     expected_version = data.get('expected_version')
     if not download_url:
@@ -4015,7 +4101,8 @@ def downloads_queue():
         expected_name=expected_name,
         update_only=update_only,
         expected_version=expected_version,
-        title_id=title_id
+        title_id=title_id,
+        protocol=protocol,
     )
     return jsonify({'success': ok, 'message': message})
 
@@ -4052,6 +4139,43 @@ def manage_delete_duplicates():
         post_library_change()
     return jsonify(results)
 
+@app.post('/api/manage/delete-library-content')
+@access_required('admin')
+def manage_delete_library_content():
+    data = request.json or {}
+    dry_run = bool(data.get('dry_run', False))
+    verbose = bool(data.get('verbose', False))
+    scope = str(data.get('scope') or '').strip()
+    title_id = data.get('title_id')
+    app_id = data.get('app_id')
+    app_type = data.get('app_type')
+    version = data.get('version')
+
+    results = delete_library_content(
+        scope=scope,
+        dry_run=dry_run,
+        verbose=verbose,
+        title_id=title_id,
+        app_id=app_id,
+        app_type=app_type,
+        version=version,
+    )
+    if not dry_run and results.get('mutated'):
+        _run_post_library_change()
+    status_code = 200 if results.get('success') else 400
+    return jsonify(results), status_code
+
+@app.post('/api/manage/delete-orphaned-addons')
+@access_required('admin')
+def manage_delete_orphaned_addons():
+    data = request.json or {}
+    dry_run = bool(data.get('dry_run', False))
+    verbose = bool(data.get('verbose', False))
+    results = delete_orphaned_addons(dry_run=dry_run, verbose=verbose)
+    if not dry_run and results.get('mutated'):
+        post_library_change()
+    return jsonify(results)
+
 @app.post('/api/manage/check-downloads')
 @access_required('admin')
 def manage_check_downloads():
@@ -4073,11 +4197,20 @@ def downloads_queue_state():
     return jsonify({'success': True, 'state': state})
 
 
+@app.post('/api/downloads/queue/delete')
+@access_required('admin')
+def downloads_queue_delete():
+    data = request.json or {}
+    ok, message = remove_pending_download(data.get('key'))
+    state = get_downloads_state()
+    return jsonify({'success': ok, 'message': message, 'state': state})
+
+
 @app.get('/api/downloads/active')
 @access_required('admin')
 def downloads_active():
-    ok, message, items = get_active_downloads()
-    return jsonify({'success': ok, 'message': message, 'items': items})
+    ok, message, items, summary = get_active_downloads()
+    return jsonify({'success': ok, 'message': message, 'items': items, 'summary': summary})
 
 
 @app.get('/api/manage/downloads-queue')
@@ -4888,6 +5021,38 @@ def get_all_titles_api():
         .group_by(app_files.c.app_id)
         .subquery()
     )
+    base_status_subquery = (
+        db.session.query(
+            Apps.title_id.label('title_fk'),
+            func.max(
+                case(
+                    (and_(Apps.app_type == APP_TYPE_BASE, Apps.owned.is_(True)), 1),
+                    else_=0
+                )
+            ).label('has_owned_base')
+        )
+        .group_by(Apps.title_id)
+        .subquery()
+    )
+    update_status_subquery = (
+        db.session.query(
+            Apps.title_id.label('title_fk'),
+            func.max(
+                case(
+                    (Apps.app_type == APP_TYPE_UPD, app_version_num_expr),
+                    else_=0
+                )
+            ).label('max_update_version'),
+            func.max(
+                case(
+                    (and_(Apps.app_type == APP_TYPE_UPD, Apps.owned.is_(True)), app_version_num_expr),
+                    else_=0
+                )
+            ).label('max_owned_update_version')
+        )
+        .group_by(Apps.title_id)
+        .subquery()
+    )
     dlc_agg_subquery = (
         db.session.query(
             Apps.app_id.label('dlc_app_id'),
@@ -4903,6 +5068,36 @@ def get_all_titles_api():
         .group_by(Apps.app_id)
         .subquery()
     )
+    dlc_title_status_subquery = (
+        db.session.query(
+            Apps.title_id.label('title_fk'),
+            Apps.app_id.label('dlc_app_id'),
+            func.max(app_version_num_expr).label('max_version'),
+            func.max(
+                case(
+                    (Apps.owned.is_(True), app_version_num_expr),
+                    else_=0
+                )
+            ).label('max_owned_version')
+        )
+        .filter(Apps.app_type == APP_TYPE_DLC)
+        .group_by(Apps.title_id, Apps.app_id)
+        .subquery()
+    )
+    dlc_completion_subquery = (
+        db.session.query(
+            dlc_title_status_subquery.c.title_fk.label('title_fk'),
+            func.count().label('dlc_count'),
+            func.sum(
+                case(
+                    (dlc_title_status_subquery.c.max_owned_version >= dlc_title_status_subquery.c.max_version, 1),
+                    else_=0
+                )
+            ).label('complete_dlc_count')
+        )
+        .group_by(dlc_title_status_subquery.c.title_fk)
+        .subquery()
+    )
 
     query = (
         db.session.query(
@@ -4910,20 +5105,25 @@ def get_all_titles_api():
             Apps.title_id.label('title_fk'),
             Titles.id.label('title_db_id'),
             Titles.title_id.label('title_id'),
-            Titles.have_base.label('have_base'),
-            Titles.up_to_date.label('up_to_date'),
-            Titles.complete.label('complete'),
             Apps.app_id.label('app_id'),
             Apps.app_version.label('app_version'),
             Apps.app_type.label('app_type'),
             Apps.owned.label('owned'),
             func.coalesce(size_subquery.c.size, 0).label('size'),
+            func.coalesce(base_status_subquery.c.has_owned_base, 0).label('has_owned_base'),
+            func.coalesce(update_status_subquery.c.max_update_version, 0).label('max_update_version'),
+            func.coalesce(update_status_subquery.c.max_owned_update_version, 0).label('max_owned_update_version'),
             func.coalesce(dlc_agg_subquery.c.max_version, 0).label('dlc_max_version'),
             func.coalesce(dlc_agg_subquery.c.max_owned_version, 0).label('dlc_max_owned_version'),
+            func.coalesce(dlc_completion_subquery.c.dlc_count, 0).label('dlc_count'),
+            func.coalesce(dlc_completion_subquery.c.complete_dlc_count, 0).label('complete_dlc_count'),
         )
         .join(Titles, Apps.title_id == Titles.id)
         .outerjoin(size_subquery, size_subquery.c.app_pk == Apps.id)
+        .outerjoin(base_status_subquery, base_status_subquery.c.title_fk == Titles.id)
+        .outerjoin(update_status_subquery, update_status_subquery.c.title_fk == Titles.id)
         .outerjoin(dlc_agg_subquery, dlc_agg_subquery.c.dlc_app_id == Apps.app_id)
+        .outerjoin(dlc_completion_subquery, dlc_completion_subquery.c.title_fk == Titles.id)
         .filter(
             or_(
                 Apps.app_type == APP_TYPE_BASE,
@@ -4946,21 +5146,53 @@ def get_all_titles_api():
     if updates == 'up_to_date':
         query = query.filter(
             or_(
-                and_(Apps.app_type == APP_TYPE_BASE, Titles.have_base.is_(True), Titles.up_to_date.is_(True)),
+                and_(
+                    Apps.app_type == APP_TYPE_BASE,
+                    base_status_subquery.c.has_owned_base == 1,
+                    or_(
+                        update_status_subquery.c.max_update_version.is_(None),
+                        update_status_subquery.c.max_update_version == 0,
+                        update_status_subquery.c.max_owned_update_version >= update_status_subquery.c.max_update_version,
+                    ),
+                ),
                 and_(Apps.app_type == APP_TYPE_DLC, dlc_agg_subquery.c.max_owned_version >= dlc_agg_subquery.c.max_version),
             )
         )
     elif updates == 'outdated':
         query = query.filter(
             or_(
-                and_(Apps.app_type == APP_TYPE_BASE, or_(Titles.have_base.is_(False), Titles.up_to_date.is_(False))),
+                and_(
+                    Apps.app_type == APP_TYPE_BASE,
+                    or_(
+                        func.coalesce(base_status_subquery.c.has_owned_base, 0) == 0,
+                        and_(
+                            func.coalesce(update_status_subquery.c.max_update_version, 0) > 0,
+                            func.coalesce(update_status_subquery.c.max_owned_update_version, 0) < func.coalesce(update_status_subquery.c.max_update_version, 0),
+                        ),
+                    ),
+                ),
                 and_(Apps.app_type == APP_TYPE_DLC, dlc_agg_subquery.c.max_owned_version < dlc_agg_subquery.c.max_version),
             )
         )
     if completion == 'complete':
-        query = query.filter(and_(Apps.app_type == APP_TYPE_BASE, Titles.complete.is_(True)))
+        query = query.filter(
+            and_(
+                Apps.app_type == APP_TYPE_BASE,
+                or_(
+                    dlc_completion_subquery.c.dlc_count.is_(None),
+                    dlc_completion_subquery.c.dlc_count == 0,
+                    dlc_completion_subquery.c.complete_dlc_count >= dlc_completion_subquery.c.dlc_count,
+                ),
+            )
+        )
     elif completion == 'missing_dlc':
-        query = query.filter(and_(Apps.app_type == APP_TYPE_BASE, Titles.complete.is_(False)))
+        query = query.filter(
+            and_(
+                Apps.app_type == APP_TYPE_BASE,
+                func.coalesce(dlc_completion_subquery.c.dlc_count, 0) > 0,
+                func.coalesce(dlc_completion_subquery.c.complete_dlc_count, 0) < func.coalesce(dlc_completion_subquery.c.dlc_count, 0),
+            )
+        )
 
     if search:
         search_normalized = _normalize_library_search_text(search)
@@ -5166,9 +5398,14 @@ def get_all_titles_api():
             'size': int(row.size or 0),
         }
         if row.app_type == APP_TYPE_BASE:
-            game['has_base'] = bool(row.have_base)
-            game['has_latest_version'] = bool(row.have_base) and bool(row.up_to_date)
-            game['has_all_dlcs'] = bool(row.complete)
+            has_base = bool(row.has_owned_base)
+            max_update_version = int(row.max_update_version or 0)
+            max_owned_update_version = int(row.max_owned_update_version or 0)
+            dlc_count = int(row.dlc_count or 0)
+            complete_dlc_count = int(row.complete_dlc_count or 0)
+            game['has_base'] = has_base
+            game['has_latest_version'] = has_base and (max_update_version <= 0 or max_owned_update_version >= max_update_version)
+            game['has_all_dlcs'] = (dlc_count <= 0) or (complete_dlc_count >= dlc_count)
             game['version'] = list(update_versions_by_title_fk.get(row.title_fk, []))
         elif row.app_type == APP_TYPE_DLC:
             game['has_latest_version'] = int(row.dlc_max_owned_version or 0) >= int(row.dlc_max_version or 0)
@@ -5255,11 +5492,48 @@ def get_title_details_api():
         query = query.filter(Titles.title_id == title_id.upper())
     row = query.order_by(Apps.id.desc()).first()
 
+    app_size_subquery = (
+        db.session.query(
+            app_files.c.app_id.label('app_pk'),
+            func.coalesce(func.sum(Files.size), 0).label('size'),
+        )
+        .outerjoin(Files, Files.id == app_files.c.file_id)
+        .group_by(app_files.c.app_id)
+        .subquery()
+    )
+
     game = None
     if row:
         with titles.titledb_session():
             title_info = titles.get_game_info(row.title_id) or {}
             app_info = title_info if row.app_type == APP_TYPE_BASE else (titles.get_game_info(row.app_id) or title_info)
+            title_apps = (
+                Apps.query
+                .filter(Apps.title_id == row.title_fk)
+                .all()
+            )
+            owned_base_count = sum(1 for app in title_apps if app.app_type == APP_TYPE_BASE and bool(app.owned))
+            owned_update_count = sum(1 for app in title_apps if app.app_type == APP_TYPE_UPD and bool(app.owned))
+            owned_dlc_count = sum(1 for app in title_apps if app.app_type == APP_TYPE_DLC and bool(app.owned))
+            has_base = owned_base_count > 0
+            deletable_versions = _build_deletable_version_map(title_apps)
+            available_update_versions = [_safe_int(app.app_version) for app in title_apps if app.app_type == APP_TYPE_UPD]
+            owned_update_versions = [_safe_int(app.app_version) for app in title_apps if app.app_type == APP_TYPE_UPD and bool(app.owned)]
+            highest_available_update_version = max(available_update_versions, default=0)
+            highest_owned_update_version = max(owned_update_versions, default=0)
+            has_latest_version = highest_available_update_version <= 0 or highest_owned_update_version >= highest_available_update_version
+            dlc_latest_by_app_id = {}
+            for app in title_apps:
+                if app.app_type != APP_TYPE_DLC:
+                    continue
+                version_num = _safe_int(app.app_version)
+                current = dlc_latest_by_app_id.get(app.app_id)
+                if current is None or version_num > current['version']:
+                    dlc_latest_by_app_id[app.app_id] = {
+                        'version': version_num,
+                        'owned': bool(app.owned),
+                    }
+            has_all_dlcs = all(entry['owned'] for entry in dlc_latest_by_app_id.values()) if dlc_latest_by_app_id else True
             game = {
                 'id': app_info.get('id') or row.app_id,
                 'name': app_info.get('name') or row.app_id,
@@ -5277,18 +5551,34 @@ def get_title_details_api():
                 'app_type': row.app_type,
                 'owned': bool(row.owned),
                 'size': int(row.size or 0),
+                'owned_base_count': int(owned_base_count or 0),
+                'owned_update_count': int(owned_update_count or 0),
+                'owned_dlc_count': int(owned_dlc_count or 0),
+                'has_owned_content': bool(owned_base_count or owned_update_count or owned_dlc_count),
             }
             if row.app_type == APP_TYPE_BASE:
                 versions = []
                 for upd in (
-                    db.session.query(Apps.app_version, Apps.owned)
+                    db.session.query(
+                        Apps.app_id,
+                        Apps.app_version,
+                        Apps.owned,
+                        func.coalesce(app_size_subquery.c.size, 0).label('size'),
+                    )
+                    .outerjoin(app_size_subquery, app_size_subquery.c.app_pk == Apps.id)
                     .filter(Apps.title_id == row.title_fk, Apps.app_type == APP_TYPE_UPD)
                     .all()
                 ):
                     versions.append({
+                        'app_id': upd.app_id,
+                        'app_type': APP_TYPE_UPD,
                         'version': int(upd.app_version or 0),
                         'owned': bool(upd.owned),
-                        'size': 0,
+                        'deletable': deletable_versions.get(
+                            (str(upd.app_id or '').strip().upper(), APP_TYPE_UPD, str(upd.app_version or '').strip()),
+                            False,
+                        ),
+                        'size': int(upd.size or 0),
                         'release_date': 'Unknown',
                     })
                 release_dates = {
@@ -5299,9 +5589,9 @@ def get_title_details_api():
                     version['release_date'] = release_dates.get(version['version'], 'Unknown')
                 versions.sort(key=lambda item: item['version'])
                 game['version'] = versions
-                game['has_base'] = bool(row.have_base)
-                game['has_latest_version'] = bool(row.have_base) and bool(row.up_to_date)
-                game['has_all_dlcs'] = bool(row.complete)
+                game['has_base'] = has_base
+                game['has_latest_version'] = has_base and has_latest_version
+                game['has_all_dlcs'] = has_all_dlcs
                 dlc_rows = (
                     db.session.query(Apps.app_id, Apps.app_version, Apps.owned)
                     .filter(Apps.title_id == row.title_fk, Apps.app_type == APP_TYPE_DLC)
@@ -5367,13 +5657,26 @@ def get_title_details_api():
             elif row.app_type == APP_TYPE_DLC:
                 dlc_versions = []
                 for dlc in (
-                    db.session.query(Apps.app_version, Apps.owned)
+                    db.session.query(
+                        Apps.app_id,
+                        Apps.app_version,
+                        Apps.owned,
+                        func.coalesce(app_size_subquery.c.size, 0).label('size'),
+                    )
+                    .outerjoin(app_size_subquery, app_size_subquery.c.app_pk == Apps.id)
                     .filter(Apps.app_type == APP_TYPE_DLC, Apps.app_id == row.app_id)
                     .all()
                 ):
                     dlc_versions.append({
+                        'app_id': dlc.app_id,
+                        'app_type': APP_TYPE_DLC,
                         'version': int(dlc.app_version or 0),
                         'owned': bool(dlc.owned),
+                        'deletable': deletable_versions.get(
+                            (str(dlc.app_id or '').strip().upper(), APP_TYPE_DLC, str(dlc.app_version or '').strip()),
+                            False,
+                        ),
+                        'size': int(dlc.size or 0),
                         'release_date': 'Unknown',
                     })
                 dlc_versions.sort(key=lambda item: item['version'])
@@ -6001,8 +6304,7 @@ def shop_banner_api(title_id):
     return response
 
 
-@debounce(10)
-def post_library_change():
+def _run_post_library_change():
     if _is_conversion_running():
         logger.info("Skipping library rebuild: conversion job is running.")
         return
@@ -6053,6 +6355,10 @@ def post_library_change():
             with library_rebuild_lock:
                 library_rebuild_status['in_progress'] = False
                 library_rebuild_status['updated_at'] = time.time()
+
+@debounce(10)
+def post_library_change():
+    _run_post_library_change()
 
 @app.post('/api/library/scan')
 @access_required('admin')

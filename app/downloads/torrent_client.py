@@ -109,16 +109,16 @@ def list_active(client_type, url, username=None, password=None, category=None, d
     return []
 
 
-def remove_torrent(client_type, url, torrent_hash, username=None, password=None, timeout_seconds=15):
+def remove_torrent(client_type, url, torrent_hash, username=None, password=None, timeout_seconds=15, delete_files=False):
     if not torrent_hash:
         return False, "Torrent hash is required."
     client_type = (client_type or "").lower()
     if client_type == "qbittorrent":
-        return _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds)
+        return _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds, delete_files=delete_files)
     if client_type == "transmission":
-        return _remove_transmission(url, username, password, torrent_hash, timeout_seconds)
+        return _remove_transmission(url, username, password, torrent_hash, timeout_seconds, delete_files=delete_files)
     if client_type == "deluge":
-        return _remove_deluge(url, password, torrent_hash, timeout_seconds)
+        return _remove_deluge(url, password, torrent_hash, timeout_seconds, delete_files=delete_files)
     return False, "Unsupported client type."
 
 
@@ -843,7 +843,7 @@ def _is_deluge_managed_label(label):
     return False
 
 
-def _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds):
+def _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
     base = url.rstrip("/")
     session = requests.Session()
     session.headers.update({"User-Agent": "AeroFoil/Downloads"})
@@ -857,7 +857,7 @@ def _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds):
             return False, "qBittorrent login failed."
     resp = session.post(
         f"{base}/api/v2/torrents/delete",
-        data={"hashes": torrent_hash, "deleteFiles": "false"},
+        data={"hashes": torrent_hash, "deleteFiles": "true" if delete_files else "false"},
         timeout=timeout_seconds,
     )
     if resp.status_code != 200:
@@ -865,18 +865,18 @@ def _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds):
     return True, "qBittorrent removed torrent."
 
 
-def _remove_qbittorrent_with_session(session, base, torrent_hash, timeout_seconds):
+def _remove_qbittorrent_with_session(session, base, torrent_hash, timeout_seconds, delete_files=False):
     if not torrent_hash:
         return False
     resp = session.post(
         f"{base}/api/v2/torrents/delete",
-        data={"hashes": torrent_hash, "deleteFiles": "false"},
+        data={"hashes": torrent_hash, "deleteFiles": "true" if delete_files else "false"},
         timeout=timeout_seconds,
     )
     return resp.status_code == 200
 
 
-def _remove_transmission(url, username, password, torrent_hash, timeout_seconds):
+def _remove_transmission(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
     base = url.rstrip("/")
     session = requests.Session()
     session.headers.update({"User-Agent": "AeroFoil/Downloads"})
@@ -885,7 +885,7 @@ def _remove_transmission(url, username, password, torrent_hash, timeout_seconds)
 
     payload = {
         "method": "torrent-remove",
-        "arguments": {"ids": [torrent_hash], "delete-local-data": False},
+        "arguments": {"ids": [torrent_hash], "delete-local-data": bool(delete_files)},
     }
     resp = session.post(f"{base}/transmission/rpc", json=payload, timeout=timeout_seconds)
     if resp.status_code == 409:
@@ -898,7 +898,7 @@ def _remove_transmission(url, username, password, torrent_hash, timeout_seconds)
     return True, "Transmission removed torrent."
 
 
-def _remove_deluge(url, password, torrent_hash, timeout_seconds):
+def _remove_deluge(url, password, torrent_hash, timeout_seconds, delete_files=False):
     ok, logged_in = _deluge_login(url, password, timeout_seconds=timeout_seconds)
     if not ok or not logged_in:
         return False, "Deluge login failed."
@@ -907,7 +907,7 @@ def _remove_deluge(url, password, torrent_hash, timeout_seconds):
         url,
         password,
         "core.remove_torrent",
-        [torrent_hash, False],
+        [torrent_hash, bool(delete_files)],
         timeout_seconds=timeout_seconds
     )
     if not ok:

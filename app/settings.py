@@ -223,6 +223,93 @@ def _normalize_download_search_char_replacements(raw_rules):
         seen_from.add(from_text)
     return normalized
 
+
+def _normalize_download_client_config(raw_client, defaults, allow_credentials=True, allow_download_path=True, allow_api_key=False, shared_category=None):
+    merged = (defaults or {}).copy()
+    if isinstance(raw_client, dict):
+        merged.update(raw_client)
+
+    raw_category = ''
+    if isinstance(raw_client, dict):
+        raw_category = str(raw_client.get('category') or '').strip()
+    resolved_category = str(
+        raw_category
+        or shared_category
+        or defaults.get('category')
+        or 'aerofoil'
+    ).strip()
+    normalized = {
+        'type': str(merged.get('type') or defaults.get('type') or '').strip().lower(),
+        'url': str(merged.get('url') or '').strip(),
+        'category': resolved_category,
+    }
+    if allow_credentials:
+        normalized['username'] = str(merged.get('username') or '').strip()
+        normalized['password'] = str(merged.get('password') or '')
+    if allow_download_path:
+        normalized['download_path'] = str(merged.get('download_path') or '').strip()
+    if allow_api_key:
+        normalized['api_key'] = str(merged.get('api_key') or '').strip()
+    return normalized
+
+
+def _normalize_download_settings(downloads):
+    defaults = DEFAULT_SETTINGS.get('downloads', {}) or {}
+    raw_downloads = downloads if isinstance(downloads, dict) else {}
+    merged = defaults.copy()
+    merged.update(raw_downloads)
+    legacy_min_seeders = raw_downloads.get('min_seeders')
+    shared_category = str(
+        merged.get('category')
+        or (merged.get('torrent_client') or {}).get('category')
+        or (merged.get('usenet_client') or {}).get('category')
+        or defaults.get('category')
+        or 'aerofoil'
+    ).strip()
+    merged['category'] = shared_category
+
+    prowlarr_defaults = defaults.get('prowlarr', {})
+    merged_prowlarr = prowlarr_defaults.copy()
+    merged_prowlarr.update(merged.get('prowlarr') or {})
+    merged['prowlarr'] = merged_prowlarr
+    merged['search_char_replacements'] = _normalize_download_search_char_replacements(
+        merged.get('search_char_replacements')
+    )
+    raw_torrent_client = dict(raw_downloads.get('torrent_client') or {})
+    if 'min_seeders' not in raw_torrent_client and legacy_min_seeders is not None:
+        raw_torrent_client['min_seeders'] = legacy_min_seeders
+    merged['torrent_client'] = _normalize_download_client_config(
+        raw_torrent_client,
+        defaults.get('torrent_client', {}),
+        allow_credentials=True,
+        allow_download_path=True,
+        allow_api_key=False,
+        shared_category=shared_category,
+    )
+    merged['torrent_client']['min_seeders'] = _coerce_int(
+        raw_torrent_client.get('min_seeders'),
+        default=(defaults.get('torrent_client', {}) or {}).get('min_seeders', 2),
+        minimum=0,
+        maximum=100000,
+    )
+    raw_usenet_client = dict(raw_downloads.get('usenet_client') or {})
+    merged['usenet_client'] = _normalize_download_client_config(
+        raw_usenet_client,
+        defaults.get('usenet_client', {}),
+        allow_credentials=False,
+        allow_download_path=False,
+        allow_api_key=True,
+        shared_category=shared_category,
+    )
+    merged['usenet_client']['min_age_minutes'] = _coerce_int(
+        raw_usenet_client.get('min_age_minutes'),
+        default=(defaults.get('usenet_client', {}) or {}).get('min_age_minutes', 0),
+        minimum=0,
+        maximum=10000000,
+    )
+    merged.pop('min_seeders', None)
+    return merged
+
 def _read_env_bool(key):
     raw = os.environ.get(key)
     if raw is None:
@@ -233,6 +320,7 @@ def _read_env_bool(key):
     if lowered in ('0', 'false', 'no', 'off'):
         return False
     return None
+
 
 def _read_env_csv(key):
     raw = os.environ.get(key)
@@ -443,132 +531,66 @@ def load_settings(force_reload=False):
         if not force_reload and _is_settings_cache_valid(current_signature, current_time):
             return _settings_cache
 
-        if os.path.exists(CONFIG_FILE):
+        config_exists = os.path.exists(CONFIG_FILE)
+        if config_exists:
             logger.debug('Reading configuration file.')
             with open(CONFIG_FILE, 'r') as yaml_file:
                 settings = yaml.safe_load(yaml_file) or {}
             if not isinstance(settings, dict):
                 settings = {}
-
-            if 'security' not in settings:
-                settings['security'] = DEFAULT_SETTINGS.get('security', {})
-            else:
-                defaults = DEFAULT_SETTINGS.get('security', {})
-                merged = defaults.copy()
-                merged.update(settings.get('security', {}))
-                settings['security'] = merged
-
-            if 'shop' not in settings:
-                settings['shop'] = DEFAULT_SETTINGS.get('shop', {})
-            else:
-                defaults = DEFAULT_SETTINGS.get('shop', {})
-                merged = defaults.copy()
-                merged.update(settings.get('shop', {}))
-                settings['shop'] = merged
-            settings['shop']['fast_transfer_mode'] = _coerce_bool(
-                settings['shop'].get('fast_transfer_mode'),
-                default=False,
-            )
-
-            env_trust = _read_env_bool('AEROFOIL_TRUST_PROXY_HEADERS')
-            if env_trust is None:
-                env_trust = _read_env_bool('OWNFOIL_TRUST_PROXY_HEADERS')
-            if env_trust is not None:
-                settings['security']['trust_proxy_headers'] = env_trust
-            env_proxies = _read_env_csv('AEROFOIL_TRUSTED_PROXIES')
-            if env_proxies is None:
-                env_proxies = _read_env_csv('OWNFOIL_TRUSTED_PROXIES')
-            if env_proxies is not None:
-                settings['security']['trusted_proxies'] = env_proxies
-            settings['security'] = _normalize_security_settings(settings.get('security'))
-
-            if 'downloads' not in settings:
-                settings['downloads'] = DEFAULT_SETTINGS.get('downloads', {})
-            else:
-                defaults = DEFAULT_SETTINGS.get('downloads', {})
-                merged = defaults.copy()
-                merged.update(settings.get('downloads', {}))
-                settings['downloads'] = merged
-            # Keep nested downloads settings backward-compatible when new keys are added.
-            prowlarr_defaults = (DEFAULT_SETTINGS.get('downloads', {}) or {}).get('prowlarr', {})
-            merged_prowlarr = prowlarr_defaults.copy()
-            merged_prowlarr.update((settings['downloads'].get('prowlarr') or {}))
-            settings['downloads']['prowlarr'] = merged_prowlarr
-            settings['downloads']['search_char_replacements'] = _normalize_download_search_char_replacements(
-                settings['downloads'].get('search_char_replacements')
-            )
-
-            if 'titles' not in settings:
-                settings['titles'] = DEFAULT_SETTINGS.get('titles', {})
-            else:
-                defaults = DEFAULT_SETTINGS.get('titles', {})
-                merged = defaults.copy()
-                merged.update(settings.get('titles', {}))
-                settings['titles'] = merged
-            settings['titles']['manual_overrides'] = _normalize_titles_manual_overrides(
-                settings['titles'].get('manual_overrides')
-            )
-
-            if 'library' not in settings:
-                settings['library'] = DEFAULT_SETTINGS.get('library', {})
-            else:
-                defaults = DEFAULT_SETTINGS.get('library', {})
-                merged = defaults.copy()
-                merged.update(settings.get('library', {}))
-                settings['library'] = merged
-            env_conversion_staging_dir = _resolve_env_conversion_staging_dir()
-            if env_conversion_staging_dir is not None:
-                settings['library']['conversion_staging_dir'] = env_conversion_staging_dir
-            settings['library']['conversion_staging_dir'] = _normalize_conversion_staging_dir(
-                settings['library'].get('conversion_staging_dir')
-            )
-            settings['library']['naming_templates'] = _normalize_library_naming_templates(
-                settings['library'].get('naming_templates')
-            )
-
-            valid_keys = load_keys()
-            settings['titles']['valid_keys'] = valid_keys
-
         else:
-            settings = DEFAULT_SETTINGS
-            env_trust = _read_env_bool('AEROFOIL_TRUST_PROXY_HEADERS')
-            if env_trust is None:
-                env_trust = _read_env_bool('OWNFOIL_TRUST_PROXY_HEADERS')
-            if env_trust is not None:
-                settings['security']['trust_proxy_headers'] = env_trust
-            env_proxies = _read_env_csv('AEROFOIL_TRUSTED_PROXIES')
-            if env_proxies is None:
-                env_proxies = _read_env_csv('OWNFOIL_TRUSTED_PROXIES')
-            if env_proxies is not None:
-                settings['security']['trusted_proxies'] = env_proxies
-            settings['security'] = _normalize_security_settings(settings.get('security'))
-            with open(CONFIG_FILE, 'w') as yaml_file:
-                yaml.dump(settings, yaml_file)
+            settings = {}
 
-        settings['security'] = _normalize_security_settings(settings.get('security'))
-        settings.setdefault('library', {})
+        def _merge_section(name):
+            defaults = DEFAULT_SETTINGS.get(name, {})
+            merged = defaults.copy()
+            raw_section = settings.get(name, {})
+            if isinstance(raw_section, dict):
+                merged.update(raw_section)
+            settings[name] = merged
+
+        _merge_section('security')
+        _merge_section('shop')
+        _merge_section('titles')
+        _merge_section('library')
+
+        env_trust = _read_env_bool('AEROFOIL_TRUST_PROXY_HEADERS')
+        if env_trust is None:
+            env_trust = _read_env_bool('OWNFOIL_TRUST_PROXY_HEADERS')
+        if env_trust is not None:
+            settings['security']['trust_proxy_headers'] = env_trust
+
+        env_proxies = _read_env_csv('AEROFOIL_TRUSTED_PROXIES')
+        if env_proxies is None:
+            env_proxies = _read_env_csv('OWNFOIL_TRUSTED_PROXIES')
+        if env_proxies is not None:
+            settings['security']['trusted_proxies'] = env_proxies
+
         env_conversion_staging_dir = _resolve_env_conversion_staging_dir()
         if env_conversion_staging_dir is not None:
             settings['library']['conversion_staging_dir'] = env_conversion_staging_dir
+
+        settings['security'] = _normalize_security_settings(settings.get('security'))
+        settings['downloads'] = _normalize_download_settings(settings.get('downloads'))
+        settings['titles']['manual_overrides'] = _normalize_titles_manual_overrides(
+            settings['titles'].get('manual_overrides')
+        )
         settings['library']['conversion_staging_dir'] = _normalize_conversion_staging_dir(
             settings['library'].get('conversion_staging_dir')
         )
         settings['library']['naming_templates'] = _normalize_library_naming_templates(
             settings['library'].get('naming_templates')
         )
-        settings.setdefault('titles', {})
-        settings['titles']['manual_overrides'] = _normalize_titles_manual_overrides(
-            settings['titles'].get('manual_overrides')
-        )
-        settings.setdefault('downloads', {})
-        settings['downloads']['search_char_replacements'] = _normalize_download_search_char_replacements(
-            settings['downloads'].get('search_char_replacements')
-        )
-        settings.setdefault('shop', {})
         settings['shop']['fast_transfer_mode'] = _coerce_bool(
             settings['shop'].get('fast_transfer_mode'),
             default=False,
         )
+
+        if not config_exists:
+            with open(CONFIG_FILE, 'w') as yaml_file:
+                yaml.dump(settings, yaml_file)
+
+        settings['titles']['valid_keys'] = load_keys()
 
         _settings_cache = settings
         _settings_cache_time = current_time
@@ -584,6 +606,7 @@ def set_security_settings(data):
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)
     _invalidate_settings_cache()
+
 
 def verify_settings(section, data):
     success = True
@@ -742,14 +765,19 @@ def set_shop_settings(data):
 def set_download_settings(data):
     settings = load_settings(force_reload=True)
     settings.setdefault('downloads', {})
-    if data and 'search_char_replacements' in data:
-        data['search_char_replacements'] = _normalize_download_search_char_replacements(
-            data.get('search_char_replacements')
+    incoming = dict(data or {})
+    if 'search_char_replacements' in incoming:
+        incoming['search_char_replacements'] = _normalize_download_search_char_replacements(
+            incoming.get('search_char_replacements')
         )
-    settings['downloads'].update(data)
+    current = settings.get('downloads', {})
+    merged = dict(current)
+    merged.update(incoming)
+    settings['downloads'] = _normalize_download_settings(merged)
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)
     _invalidate_settings_cache()
+
 
 def set_library_settings(data):
     settings = load_settings(force_reload=True)
