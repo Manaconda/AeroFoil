@@ -699,7 +699,7 @@
             btn.setAttribute('data-bs-app-type', game.app_type);
 
             const iconSrc = game.title_id ? `/api/shop/icon/${game.title_id}` : '';
-            const title = escapeHtml(getGameTitle(game));
+            const title = escapeHtml(getLibraryDisplayTitle(game));
             const genre = escapeHtml(getPrimaryGenre(game));
             btn.innerHTML = `
                 <div class="discover-tile-body">
@@ -936,7 +936,7 @@
                 .attr('data-bs-app-type', game.app_type);
             const cacheIconSrc = game.title_id ? `/api/shop/icon/${game.title_id}?size=web` : '';
             const iconFallback = '/static/placeholder-icon.svg';
-            const title = escapeHtml(getGameTitle(game));
+            const title = escapeHtml(getLibraryDisplayTitle(game));
             const parts = splitGenres(getGameGenre(game));
             const genre = escapeHtml(parts.length > 3 ? `${parts.slice(0, 3).join(', ')}...` : parts.join(', '));
 
