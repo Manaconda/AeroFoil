@@ -99,6 +99,7 @@ DEFAULT_SETTINGS = {
     "titles": {
         "language": "en",
         "region": "US",
+        "prefer_english_metadata": False,
         "valid_keys": False,
         "manual_overrides": {},
     },

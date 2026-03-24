@@ -3656,6 +3656,7 @@ def set_titles_settings_api():
     settings = request.json
     region = settings['region']
     language = settings['language']
+    prefer_english_metadata = bool(settings.get('prefer_english_metadata'))
     languages_file = os.path.join(TITLEDB_DIR, 'languages.json')
     if os.path.exists(languages_file):
         with open(languages_file) as f:
@@ -3681,7 +3682,7 @@ def set_titles_settings_api():
         }
         return jsonify(resp)
     
-    set_titles_settings(region, language)
+    set_titles_settings(region, language, prefer_english_metadata=prefer_english_metadata)
     reload_conf()
     titledb.update_titledb(app_settings)
     post_library_change()
