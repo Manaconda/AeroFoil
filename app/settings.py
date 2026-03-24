@@ -139,6 +139,25 @@ def _normalize_titles_manual_overrides(raw_overrides):
         }
     return out
 
+def _normalize_titles_settings(raw_titles):
+    defaults = DEFAULT_SETTINGS.get('titles', {}) or {}
+    merged = defaults.copy()
+    if isinstance(raw_titles, dict):
+        merged.update(raw_titles)
+
+    region = str(merged.get('region') or defaults.get('region') or 'US').strip()
+    language = str(merged.get('language') or defaults.get('language') or 'en').strip()
+    merged['region'] = region or 'US'
+    merged['language'] = language or 'en'
+    merged['prefer_english_metadata'] = _coerce_bool(
+        merged.get('prefer_english_metadata'),
+        default=defaults.get('prefer_english_metadata', False),
+    )
+    merged['manual_overrides'] = _normalize_titles_manual_overrides(
+        merged.get('manual_overrides')
+    )
+    return merged
+
 def _normalize_library_naming_templates(raw_templates):
     default_templates = (
         DEFAULT_SETTINGS.get('library', {})
@@ -572,9 +591,7 @@ def load_settings(force_reload=False):
 
         settings['security'] = _normalize_security_settings(settings.get('security'))
         settings['downloads'] = _normalize_download_settings(settings.get('downloads'))
-        settings['titles']['manual_overrides'] = _normalize_titles_manual_overrides(
-            settings['titles'].get('manual_overrides')
-        )
+        settings['titles'] = _normalize_titles_settings(settings.get('titles'))
         settings['library']['conversion_staging_dir'] = _normalize_conversion_staging_dir(
             settings['library'].get('conversion_staging_dir')
         )
@@ -712,10 +729,15 @@ def delete_library_path_from_settings(path):
                 })
     return success, errors
 
-def set_titles_settings(region, language):
+def set_titles_settings(region, language, prefer_english_metadata=False):
     settings = load_settings(force_reload=True)
-    settings['titles']['region'] = region
-    settings['titles']['language'] = language
+    settings.setdefault('titles', {})
+    settings['titles'].update({
+        'region': region,
+        'language': language,
+        'prefer_english_metadata': prefer_english_metadata,
+    })
+    settings['titles'] = _normalize_titles_settings(settings.get('titles'))
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)
     _invalidate_settings_cache()
