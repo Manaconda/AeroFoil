@@ -3529,13 +3529,18 @@ def admin_activity_api():
             title_ids.add(item['title_id'])
 
     title_names = {}
-    for tid in title_ids:
-        try:
-            info = titles.get_game_info(tid)
-            if info and info.get('name'):
-                title_names[tid] = info.get('name')
-        except Exception:
-            pass
+    try:
+        with titles.titledb_session() as titledb_loaded:
+            if titledb_loaded:
+                for tid in title_ids:
+                    try:
+                        info = titles.get_game_info(tid)
+                        if info and info.get('name'):
+                            title_names[tid] = info.get('name')
+                    except Exception:
+                        pass
+    except Exception:
+        title_names = {}
 
     for item in live:
         tid = item.get('title_id')
