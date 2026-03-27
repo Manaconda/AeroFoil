@@ -614,6 +614,7 @@
                             </div>
                             <div class="modal-body" id="settingsNoticeModalBody"></div>
                             <div class="modal-footer">
+                                <button type="button" class="btn btn-outline-secondary d-none" id="settingsNoticeDismissForeverBtn">Do not show again</button>
                                 <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
                             </div>
                         </div>
@@ -1080,6 +1081,7 @@
     let settingsNoticeModal = null;
     let settingsNoticeQueue = [];
     let activeSettingsNoticeKey = null;
+    const SETTINGS_NOTICE_SUPPRESS_KEY = 'aerofoil.settings.notice.suppressed';
 
     const initialSettingsFlags = {
         adminAccountCreated: {{ 'true' if admin_account_created else 'false' }},
@@ -1116,12 +1118,42 @@
         missingShopHauth: {
             title: 'Missing shop Hauth',
             variant: 'warning',
+            suppressible: true,
             bodyHtml: `
                 <p><a target="_blank" rel="noopener noreferrer" href="https://blawar.github.io/tinfoil/network/#host-signature">Host signature</a> verification from outside the local network is disabled while the shop <code>Hauth</code> value is missing.</p>
                 <p class="mb-0">Connect to the shop from Tinfoil with an admin account to set it.</p>
             `
         }
     };
+
+    function getSuppressedSettingsNotices() {
+        try {
+            const raw = localStorage.getItem(SETTINGS_NOTICE_SUPPRESS_KEY);
+            if (!raw) {
+                return {};
+            }
+            const parsed = JSON.parse(raw);
+            return (parsed && typeof parsed === 'object') ? parsed : {};
+        } catch (_) {
+            return {};
+        }
+    }
+
+    function isSettingsNoticeSuppressed(noticeKey) {
+        const map = getSuppressedSettingsNotices();
+        return !!map[noticeKey];
+    }
+
+    function suppressSettingsNotice(noticeKey) {
+        if (!noticeKey) {
+            return;
+        }
+        const map = getSuppressedSettingsNotices();
+        map[noticeKey] = true;
+        try {
+            localStorage.setItem(SETTINGS_NOTICE_SUPPRESS_KEY, JSON.stringify(map));
+        } catch (_) {}
+    }
 
     function getSettingsNoticeModal() {
         if (!settingsNoticeModal) {
@@ -1131,6 +1163,16 @@
                 activeSettingsNoticeKey = null;
                 showNextSettingsNotice();
             });
+            const dismissBtn = document.getElementById('settingsNoticeDismissForeverBtn');
+            if (dismissBtn) {
+                dismissBtn.addEventListener('click', function () {
+                    if (!activeSettingsNoticeKey) {
+                        return;
+                    }
+                    suppressSettingsNotice(activeSettingsNoticeKey);
+                    clearSettingsNotice(activeSettingsNoticeKey);
+                });
+            }
         }
         return settingsNoticeModal;
     }
@@ -1147,6 +1189,9 @@
 
     function queueSettingsNotice(noticeKey) {
         if (!SETTINGS_NOTICE_CONTENT[noticeKey]) {
+            return;
+        }
+        if (isSettingsNoticeSuppressed(noticeKey)) {
             return;
         }
         if (activeSettingsNoticeKey === noticeKey || settingsNoticeQueue.includes(noticeKey)) {
@@ -1171,6 +1216,7 @@
         const modalEl = $('#settingsNoticeModal');
         modalEl.find('.modal-title').text(notice.title);
         modalEl.find('#settingsNoticeModalBody').html(notice.bodyHtml);
+        modalEl.find('#settingsNoticeDismissForeverBtn').toggleClass('d-none', !notice.suppressible);
 
         const header = modalEl.find('.modal-header');
         header.removeClass('bg-danger-subtle border-danger-subtle bg-warning-subtle border-warning-subtle');
