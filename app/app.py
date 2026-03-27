@@ -1800,13 +1800,15 @@ def _block_permanent_blacklist_requests():
             settings = {}
         auth_config = _get_auth_protection_config(settings)
         client_ip = _effective_client_ip(settings)
+        geo = {}
+        if client_ip and not _is_private_ip(client_ip):
+            try:
+                geo = lookup_geoip(client_ip) or {}
+            except Exception:
+                geo = {}
+
         if _is_permanently_blocked_ip(client_ip, auth_config):
             try:
-                geo = {}
-                try:
-                    geo = lookup_geoip(client_ip) or {}
-                except Exception:
-                    geo = {}
                 _log_access_dedup(
                     kind='permanent_ip_blocked',
                     dedupe_key=f"{client_ip}|{request.path}",
@@ -1817,6 +1819,33 @@ def _block_permanent_blacklist_requests():
                     user_agent=request.headers.get('User-Agent'),
                     country=geo.get('country'),
                     country_code=geo.get('country_code'),
+                    region=geo.get('region'),
+                    city=geo.get('city'),
+                    latitude=geo.get('latitude'),
+                    longitude=geo.get('longitude'),
+                )
+            except Exception:
+                pass
+            return Response(status=404)
+
+        blocked_country_codes = {
+            str(code or '').strip().upper()
+            for code in ((settings.get('security') or {}).get('auth_blocked_country_codes') or [])
+            if str(code or '').strip()
+        }
+        country_code = str(geo.get('country_code') or '').strip().upper()
+        if blocked_country_codes and country_code and country_code in blocked_country_codes:
+            try:
+                _log_access_dedup(
+                    kind='country_blocked',
+                    dedupe_key=f"{client_ip}|{request.path}|{country_code}",
+                    ok=False,
+                    status_code=404,
+                    filename=request.path,
+                    remote_addr=client_ip,
+                    user_agent=request.headers.get('User-Agent'),
+                    country=geo.get('country'),
+                    country_code=country_code,
                     region=geo.get('region'),
                     city=geo.get('city'),
                     latitude=geo.get('latitude'),
@@ -3702,6 +3731,7 @@ def set_shop_settings_api():
         'auth_ip_lockout_window_seconds',
         'auth_ip_lockout_duration_seconds',
         'auth_permanent_ip_blacklist',
+        'auth_blocked_country_codes',
     }
     shop_data = dict(data)
     security_data = {}

@@ -1097,8 +1097,8 @@
                                 <div>
                                     <h5 class="mb-0">Blocked IPs</h5>
                                     <div class="activity-section-subtitle">
-                                        Requests blocked by the permanent IP
-                                        blacklist
+                                        Requests blocked by IP blacklist and
+                                        country rules
                                     </div>
                                 </div>
                             </div>
@@ -1119,7 +1119,7 @@
                                                 class="activity-section-subtitle"
                                             >
                                                 404 responses returned for
-                                                blacklisted IPs
+                                                denied IP or country rules
                                             </div>
                                         </div>
                                         <div class="activity-toolbar-group">
@@ -1855,9 +1855,13 @@
         let list = Array.isArray(accessHistoryAll)
             ? accessHistoryAll.slice()
             : [];
-        list = list.filter(
-            (item) => String(item?.kind || "") === "permanent_ip_blocked",
-        );
+        list = list.filter((item) => {
+            const kind = String(item?.kind || "");
+            return (
+                kind === "permanent_ip_blocked" ||
+                kind === "country_blocked"
+            );
+        });
         if (q) {
             list = list.filter((item) => {
                 const hay = [

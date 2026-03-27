@@ -65,6 +65,8 @@ DEFAULT_SETTINGS = {
         "auth_ip_lockout_duration_seconds": 1800,
         # Permanent deny-list of IP/CIDR entries for authentication endpoints.
         "auth_permanent_ip_blacklist": [],
+        # ISO country codes (eg "US", "GB") to deny at request edge.
+        "auth_blocked_country_codes": [],
     },
     "library": {
         "paths": ["/games"],

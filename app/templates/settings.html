@@ -733,6 +733,12 @@
                                 placeholder="203.0.113.4&#10;198.51.100.0/24"></textarea>
                             <div class="form-text">One IP or CIDR per line. Blacklisted clients cannot authenticate.</div>
                         </div>
+                        <div class="mt-3">
+                            <label for="authBlockedCountryCodesInput" class="form-label">Blocked country codes</label>
+                            <textarea class="form-control font-monospace text-uppercase" id="authBlockedCountryCodesInput" rows="3"
+                                placeholder="CN&#10;RU"></textarea>
+                            <div class="form-text">One ISO country code per line. Matching requests are blocked at the edge.</div>
+                        </div>
                     </div>
                 </div>
 
@@ -1696,6 +1702,7 @@
             auth_ip_lockout_window_seconds: windowSeconds,
             auth_ip_lockout_duration_seconds: durationSeconds,
             auth_permanent_ip_blacklist: parseIpEntryList(getInputVal("authPermanentIpBlacklistInput")),
+            auth_blocked_country_codes: parseCountryCodeList(getInputVal("authBlockedCountryCodesInput")),
             public_key: getInputVal("shopPublicKeyInput"),
             motd: $('#motdTextArea').val(),
         }
@@ -1765,11 +1772,41 @@
         return out;
     }
 
+    function parseCountryCodeList(value) {
+        if (!value) {
+            return [];
+        }
+        const seen = new Set();
+        const out = [];
+        String(value).replaceAll('\r', '\n').replaceAll(',', '\n').split('\n').forEach(raw => {
+            const token = String(raw || '').trim().toUpperCase();
+            if (!/^[A-Z]{2}$/.test(token)) {
+                return;
+            }
+            if (seen.has(token)) {
+                return;
+            }
+            seen.add(token);
+            out.push(token);
+        });
+        return out;
+    }
+
     function formatIpEntryList(entries) {
         if (!Array.isArray(entries)) {
             return '';
         }
         return entries.map(item => String(item || '').trim()).filter(Boolean).join('\n');
+    }
+
+    function formatCountryCodeList(entries) {
+        if (!Array.isArray(entries)) {
+            return '';
+        }
+        return entries
+            .map(item => String(item || '').trim().toUpperCase())
+            .filter(item => /^[A-Z]{2}$/.test(item))
+            .join('\n');
     }
 
     function parseSearchCharReplacements(value) {
@@ -2250,8 +2287,8 @@
             setInputVal("authIpLockoutWindowInput", securitySettings['auth_ip_lockout_window_seconds'] || 600);
             setInputVal("authIpLockoutDurationInput", securitySettings['auth_ip_lockout_duration_seconds'] || 1800);
             setInputVal("authPermanentIpBlacklistInput", formatIpEntryList(securitySettings['auth_permanent_ip_blacklist'] || []));
+            setInputVal("authBlockedCountryCodesInput", formatCountryCodeList(securitySettings['auth_blocked_country_codes'] || []));
             syncShopSecurityNotices(shopSettings);
-
             // Downloads settings
             downloadsSettings = result['downloads'] || {};
             setInputVal("downloadsIntervalInput", downloadsSettings['interval_minutes']);

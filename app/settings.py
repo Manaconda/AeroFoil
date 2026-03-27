@@ -419,6 +419,34 @@ def _normalize_ip_entries(raw):
             out.append(candidate)
     return out
 
+def _normalize_country_codes(raw):
+    if raw is None:
+        return []
+
+    entries = []
+    if isinstance(raw, str):
+        entries = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        entries = list(raw)
+
+    out = []
+    seen = set()
+    for item in entries:
+        text = str(item or '').strip()
+        if not text:
+            continue
+        for segment in text.replace('\r', '\n').replace(',', '\n').split('\n'):
+            candidate = str(segment or '').strip().upper()
+            if not candidate:
+                continue
+            if len(candidate) != 2 or not candidate.isalpha():
+                continue
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            out.append(candidate)
+    return out
+
 def _normalize_security_settings(raw_security):
     defaults = DEFAULT_SETTINGS.get('security', {}) or {}
     merged = defaults.copy()
@@ -454,6 +482,9 @@ def _normalize_security_settings(raw_security):
     )
     merged['auth_permanent_ip_blacklist'] = _normalize_ip_entries(
         merged.get('auth_permanent_ip_blacklist')
+    )
+    merged['auth_blocked_country_codes'] = _normalize_country_codes(
+        merged.get('auth_blocked_country_codes')
     )
     return merged
 
@@ -584,6 +615,12 @@ def load_settings(force_reload=False):
             env_proxies = _read_env_csv('OWNFOIL_TRUSTED_PROXIES')
         if env_proxies is not None:
             settings['security']['trusted_proxies'] = env_proxies
+
+        env_country_block = _read_env_csv('AEROFOIL_AUTH_BLOCKED_COUNTRY_CODES')
+        if env_country_block is None:
+            env_country_block = _read_env_csv('OWNFOIL_AUTH_BLOCKED_COUNTRY_CODES')
+        if env_country_block is not None:
+            settings['security']['auth_blocked_country_codes'] = env_country_block
 
         env_conversion_staging_dir = _resolve_env_conversion_staging_dir()
         if env_conversion_staging_dir is not None:
