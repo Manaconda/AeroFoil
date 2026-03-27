@@ -265,6 +265,32 @@ _DOWNLOAD_COUNT_BUFFER_FLUSH_S = 1.5
 _DOWNLOAD_COUNT_LAST_FLUSH_TS = 0.0
 
 
+def _read_int_env(env_key, default_value, minimum=None, maximum=None):
+    raw = os.environ.get(env_key)
+    if raw is None:
+        return int(default_value)
+    raw = str(raw).strip()
+    if not raw:
+        return int(default_value)
+    try:
+        value = int(raw)
+    except Exception:
+        value = int(default_value)
+    if minimum is not None:
+        value = max(int(minimum), value)
+    if maximum is not None:
+        value = min(int(maximum), value)
+    return int(value)
+
+
+ACCESS_EVENTS_QUERY_MAX_LIMIT = _read_int_env(
+    'AEROFOIL_ACCESS_EVENTS_QUERY_MAX',
+    _read_int_env('OWNFOIL_ACCESS_EVENTS_QUERY_MAX', 10000, minimum=100, maximum=200000),
+    minimum=100,
+    maximum=200000,
+)
+
+
 def flush_access_events_buffer(force=False):
     global _ACCESS_EVENT_LAST_FLUSH_TS
     now = time.time()
@@ -406,7 +432,7 @@ def get_access_events(limit=100, kind=None, kinds=None):
         limit = int(limit)
     except Exception:
         limit = 100
-    limit = max(1, min(limit, 1000))
+    limit = max(1, min(limit, ACCESS_EVENTS_QUERY_MAX_LIMIT))
 
     q = AccessEvents.query
     if kinds:

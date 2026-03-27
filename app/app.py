@@ -1275,6 +1275,24 @@ MAX_LIBRARY_UPLOAD_SIZE = 64 * 1024 * 1024 * 1024  # 64GB for game files
 MAX_SAVE_UPLOAD_SIZE = 4 * 1024 * 1024 * 1024  # 4GB for save archives
 # Leave room for multipart form overhead beyond the file payload itself.
 DEFAULT_WSGI_MAX_REQUEST_BODY_SIZE = MAX_LIBRARY_UPLOAD_SIZE + (128 * 1024 * 1024)
+ACTIVITY_API_MAX_LIMIT = _read_int_env(
+    'AEROFOIL_ACTIVITY_API_MAX_LIMIT',
+    _read_int_env('OWNFOIL_ACTIVITY_API_MAX_LIMIT', 10000, minimum=100, maximum=200000),
+    minimum=100,
+    maximum=200000,
+)
+CLIENTS_HISTORY_API_MAX_LIMIT = _read_int_env(
+    'AEROFOIL_CLIENTS_HISTORY_API_MAX_LIMIT',
+    _read_int_env('OWNFOIL_CLIENTS_HISTORY_API_MAX_LIMIT', 20000, minimum=100, maximum=200000),
+    minimum=100,
+    maximum=200000,
+)
+CLIENTS_HISTORY_CSV_MAX_LIMIT = _read_int_env(
+    'AEROFOIL_CLIENTS_HISTORY_CSV_MAX_LIMIT',
+    _read_int_env('OWNFOIL_CLIENTS_HISTORY_CSV_MAX_LIMIT', 50000, minimum=100, maximum=200000),
+    minimum=100,
+    maximum=200000,
+)
 SAVE_SYNC_DIR = os.path.join(DATA_DIR, 'saves')
 MAX_TITLE_ID_LENGTH = 16
 MAX_SAVE_NOTE_LENGTH = 120
@@ -3431,7 +3449,7 @@ def admin_activity_api():
         limit = int(limit)
     except Exception:
         limit = 100
-    limit = max(1, min(limit, 1000))
+    limit = max(1, min(limit, ACTIVITY_API_MAX_LIMIT))
 
     # Snapshot active transfers.
     with _active_transfers_lock:
@@ -3545,7 +3563,7 @@ def admin_clients_history_api():
         limit = int(limit)
     except Exception:
         limit = 250
-    limit = max(1, min(limit, 2000))
+    limit = max(1, min(limit, CLIENTS_HISTORY_API_MAX_LIMIT))
     try:
         history = get_access_events(limit=limit, kinds=['client_seen'])
         _attach_client_meta(history)
@@ -3562,7 +3580,7 @@ def admin_clients_history_csv_api():
         limit = int(limit)
     except Exception:
         limit = 2000
-    limit = max(1, min(limit, 10000))
+    limit = max(1, min(limit, CLIENTS_HISTORY_CSV_MAX_LIMIT))
 
     try:
         items = get_access_events(limit=limit, kinds=['client_seen'])
