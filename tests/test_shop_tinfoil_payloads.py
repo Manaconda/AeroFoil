@@ -40,11 +40,29 @@ class ShopTinfoilPayloadTests(unittest.TestCase):
             shop_sections_cache.clear()
             shop_sections_cache.update(copy.deepcopy(self.original_sections_cache))
 
-    def test_index_returns_tinfoil_payload_for_non_shop_client_in_tinfoil_only_mode(self):
+    def test_index_returns_html_for_browser_in_tinfoil_only_mode(self):
         shop_settings = dict(self.base_shop_settings)
         shop_settings['tinfoil_only_mode'] = True
 
-        with flask_app.test_request_context('/', method='GET', headers={'User-Agent': 'Mozilla/5.0'}):
+        with flask_app.test_request_context(
+            '/',
+            method='GET',
+            headers={'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html'},
+        ):
+            with (
+                patch('app.app._maybe_sync_request_settings', return_value=None),
+                patch('app.app.app_settings', {'shop': shop_settings}),
+                patch('app.app.access_shop', return_value='HTML PAGE'),
+            ):
+                response = index()
+
+        self.assertEqual(response, 'HTML PAGE')
+
+    def test_index_returns_tinfoil_payload_for_non_browser_in_tinfoil_only_mode(self):
+        shop_settings = dict(self.base_shop_settings)
+        shop_settings['tinfoil_only_mode'] = True
+
+        with flask_app.test_request_context('/', method='GET', headers={'User-Agent': 'curl/8.0'}):
             with (
                 patch('app.app._maybe_sync_request_settings', return_value=None),
                 patch('app.app.app_settings', {'shop': shop_settings}),

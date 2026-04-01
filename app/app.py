@@ -2000,6 +2000,7 @@ _transfer_finalize_timers_lock = threading.Lock()
 _transfer_finalize_timers = {}
 
 _TRANSFER_FINALIZE_GRACE_S = 30
+_ACTIVE_TRANSFER_STALE_S = 300
 
 
 def _get_request_user():
@@ -2560,6 +2561,32 @@ def _transfer_session_finish(key, ok, status_code, bytes_sent):
     timer.start()
 
 
+def _prune_stale_active_transfers(now=None, stale_after_s=None):
+    current_ts = float(now if now is not None else time.time())
+    stale_s = float(stale_after_s if stale_after_s is not None else _ACTIVE_TRANSFER_STALE_S)
+    removed = []
+    with _active_transfers_lock:
+        for transfer_id, meta in list(_active_transfers.items()):
+            if not isinstance(meta, dict):
+                _active_transfers.pop(transfer_id, None)
+                removed.append(transfer_id)
+                continue
+            last_seen_at = float(meta.get('last_seen_at') or meta.get('started_at') or 0.0)
+            if last_seen_at <= 0:
+                _active_transfers.pop(transfer_id, None)
+                removed.append(transfer_id)
+                continue
+            if (current_ts - last_seen_at) > stale_s:
+                _active_transfers.pop(transfer_id, None)
+                removed.append(transfer_id)
+    if removed:
+        try:
+            logger.warning("Pruned %s stale live transfer entries.", len(removed))
+        except Exception:
+            pass
+    return removed
+
+
 @app.before_request
 def _activity_before_request():
     # Track recent clients in-memory for the admin activity page.
@@ -3018,6 +3045,7 @@ def index():
     is_shop_client = _is_shop_client_request()
     is_allowed_external_client = _is_shop_client_request()
     tinfoil_only_mode = bool((app_settings.get('shop') or {}).get('tinfoil_only_mode', False))
+    prefers_html = bool(request.accept_mimetypes.accept_html)
     if bool(app_settings.get('shop', {}).get('external_tinfoil_only', False)):
         remote = _effective_remote_addr()
         if remote and not _is_private_ip(remote) and not is_allowed_external_client:
@@ -3042,12 +3070,13 @@ def index():
 
         return _respond_with_shop_payload(shop, verified_host=request.verified_host, cache_kind='root')
     
-    if is_shop_client or tinfoil_only_mode:
+    if is_shop_client or (tinfoil_only_mode and not prefers_html):
         logger.info(
-            "Serving shop protocol response from %s (client_detected=%s, tinfoil_only_mode=%s)",
+            "Serving shop protocol response from %s (client_detected=%s, tinfoil_only_mode=%s, prefers_html=%s)",
             request.remote_addr,
             bool(is_shop_client),
             bool(tinfoil_only_mode),
+            bool(prefers_html),
         )
         return access_tinfoil_shop()
 
@@ -3511,6 +3540,8 @@ def admin_activity_api():
     except Exception:
         limit = 100
     limit = max(1, min(limit, ACTIVITY_API_MAX_LIMIT))
+
+    _prune_stale_active_transfers()
 
     # Snapshot active transfers.
     with _active_transfers_lock:
@@ -5955,6 +5986,7 @@ def serve_game(id):
     meta = {
         'id': transfer_id,
         'started_at': start_ts,
+        'last_seen_at': start_ts,
         'user': username,
         'remote_addr': remote_addr,
         'user_agent': user_agent,
@@ -6039,9 +6071,10 @@ def serve_game(id):
                     state['sent'] = int(state.get('sent') or 0) + len(chunk)
                     if state['sent'] % (1024 * 1024) < len(chunk):
                         _transfer_session_progress(session_key, state['sent'])
-                        with _active_transfers_lock:
-                            if transfer_id in _active_transfers:
-                                _active_transfers[transfer_id]['bytes_sent'] = state['sent']
+                    with _active_transfers_lock:
+                        if transfer_id in _active_transfers:
+                            _active_transfers[transfer_id]['bytes_sent'] = state['sent']
+                            _active_transfers[transfer_id]['last_seen_at'] = time.time()
                 except Exception:
                     pass
                 yield chunk
