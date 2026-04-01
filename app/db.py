@@ -426,7 +426,7 @@ def add_access_event(
         return False
 
 
-def get_access_events(limit=100, kind=None, kinds=None):
+def get_access_events(limit=100, kind=None, kinds=None, user=None, users=None):
     flush_access_events_buffer(force=True)
     try:
         limit = int(limit)
@@ -444,6 +444,21 @@ def get_access_events(limit=100, kind=None, kinds=None):
             q = q.filter(AccessEvents.kind.in_(kinds))
     elif kind:
         q = q.filter_by(kind=str(kind))
+
+    user_values = []
+    if users:
+        try:
+            user_values.extend([str(value).strip() for value in users if value is not None and str(value).strip()])
+        except Exception:
+            user_values = []
+    elif user is not None and str(user).strip():
+        user_values.append(str(user).strip())
+
+    if user_values:
+        if len(user_values) == 1:
+            q = q.filter(AccessEvents.user == user_values[0])
+        else:
+            q = q.filter(AccessEvents.user.in_(user_values))
 
     events = q.order_by(AccessEvents.at.desc()).limit(limit).all()
     out = []
