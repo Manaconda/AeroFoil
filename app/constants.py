@@ -151,6 +151,7 @@ DEFAULT_SETTINGS = {
         "public": False,
         "external_tinfoil_only": False,
         "encrypt": True,
+        "tinfoil_only_mode": False,
         "fast_transfer_mode": False,
         "public_key": "",
         "clientCertPub": "-----BEGIN PUBLIC KEY-----",

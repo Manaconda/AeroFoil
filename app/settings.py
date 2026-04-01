@@ -4,6 +4,7 @@ import os
 import time
 import hashlib
 import threading
+from Crypto.PublicKey import RSA
 
 import logging
 
@@ -491,6 +492,58 @@ def _normalize_security_settings(raw_security):
     )
     return merged
 
+
+def _normalize_shop_settings(raw_shop):
+    defaults = DEFAULT_SETTINGS.get('shop', {}) or {}
+    merged = defaults.copy()
+    if isinstance(raw_shop, dict):
+        merged.update(raw_shop)
+
+    merged['motd'] = str(merged.get('motd') or defaults.get('motd') or '').strip()
+    merged['public'] = _coerce_bool(
+        merged.get('public'),
+        default=defaults.get('public', False),
+    )
+    merged['external_tinfoil_only'] = _coerce_bool(
+        merged.get('external_tinfoil_only'),
+        default=defaults.get('external_tinfoil_only', False),
+    )
+    merged['encrypt'] = _coerce_bool(
+        merged.get('encrypt'),
+        default=defaults.get('encrypt', True),
+    )
+    merged['fast_transfer_mode'] = _coerce_bool(
+        merged.get('fast_transfer_mode'),
+        default=defaults.get('fast_transfer_mode', False),
+    )
+    merged['tinfoil_only_mode'] = _coerce_bool(
+        merged.get('tinfoil_only_mode'),
+        default=defaults.get('tinfoil_only_mode', False),
+    )
+    merged['public_key'] = str(merged.get('public_key') or '').strip()
+    merged['clientCertPub'] = str(merged.get('clientCertPub') or defaults.get('clientCertPub') or '').strip()
+    merged['clientCertKey'] = str(merged.get('clientCertKey') or defaults.get('clientCertKey') or '').strip()
+    merged['host'] = str(merged.get('host') or '').strip()
+    merged['hauth'] = str(merged.get('hauth') or '').strip()
+
+    if merged['tinfoil_only_mode']:
+        merged['encrypt'] = True
+
+    return merged
+
+
+def _validate_shop_public_key(public_key_pem):
+    key_text = str(public_key_pem or '').strip()
+    if not key_text:
+        return True, None
+    try:
+        key = RSA.import_key(key_text)
+    except Exception as exc:
+        return False, f'Invalid public key: {exc}'
+    if getattr(key, 'has_private', lambda: False)():
+        return False, 'Invalid public key: expected a public key, not a private key.'
+    return True, None
+
 def load_keys(key_file=KEYS_FILE):
     try:
         file_path = os.path.abspath(str(key_file or KEYS_FILE))
@@ -638,15 +691,12 @@ def load_settings(force_reload=False):
         settings['security'] = _normalize_security_settings(settings.get('security'))
         settings['downloads'] = _normalize_download_settings(settings.get('downloads'))
         settings['titles'] = _normalize_titles_settings(settings.get('titles'))
+        settings['shop'] = _normalize_shop_settings(settings.get('shop'))
         settings['library']['conversion_staging_dir'] = _normalize_conversion_staging_dir(
             settings['library'].get('conversion_staging_dir')
         )
         settings['library']['naming_templates'] = _normalize_library_naming_templates(
             settings['library'].get('naming_templates')
-        )
-        settings['shop']['fast_transfer_mode'] = _coerce_bool(
-            settings['shop'].get('fast_transfer_mode'),
-            default=False,
         )
 
         if not config_exists:
@@ -723,6 +773,15 @@ def verify_settings(section, data):
                             'error': 'Conversion staging directory must not be inside a configured library path.'
                         })
                         break
+    elif section == 'shop':
+        normalized = _normalize_shop_settings(data)
+        public_key_ok, public_key_error = _validate_shop_public_key(normalized.get('public_key'))
+        if not public_key_ok:
+            success = False
+            errors.append({
+                'path': 'shop/public_key',
+                'error': public_key_error,
+            })
     return success, errors
 
 def add_library_path_to_settings(path):
@@ -820,12 +879,12 @@ def set_manual_title_override(title_id, data):
 
 def set_shop_settings(data):
     settings = load_settings(force_reload=True)
+    settings.setdefault('shop', {})
     shop_host = data['host']
     if '://' in shop_host:
         data['host'] = shop_host.split('://')[-1]
-    data['external_tinfoil_only'] = _coerce_bool(data.get('external_tinfoil_only'), default=False)
-    data['fast_transfer_mode'] = _coerce_bool(data.get('fast_transfer_mode'), default=False)
     settings['shop'].update(data)
+    settings['shop'] = _normalize_shop_settings(settings.get('shop'))
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)
     _invalidate_settings_cache()

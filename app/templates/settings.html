@@ -706,6 +706,12 @@
                                     can access the content. <strong>Strongly suggested to enable it for security</strong>.</div>
                             </div>
                             <div class="form-check">
+                                <input type="checkbox" class="form-check-input" id="tinfoilOnlyModeCheck"
+                                    aria-describedby="tinfoilOnlyModeCheckHelp">
+                                <label class="form-check-label" for="tinfoilOnlyModeCheck">Tinfoil Only mode</label>
+                                <div id="tinfoilOnlyModeCheckHelp" class="form-text">Only serve the Tinfoil shop payload from the shop root instead of the web library view. This automatically enables shop encryption.</div>
+                            </div>
+                            <div class="form-check">
                                 <input type="checkbox" class="form-check-input" id="fastTransferModeCheck"
                                     aria-describedby="fastTransferModeCheckHelp">
                                 <label class="form-check-label" for="fastTransferModeCheck">Fast transfer mode</label>
@@ -1036,7 +1042,8 @@
 <script>
 
     settings_map = {
-        'library/path': 'libraryPathInput'
+        'library/path': 'libraryPathInput',
+        'shop/public_key': 'shopPublicKeyInput'
     };
 
 
@@ -1286,6 +1293,41 @@
         } else if (!hasHauth) {
             queueSettingsNotice('missingShopHauth');
         }
+    }
+
+    function syncTinfoilOnlyModeControls() {
+        const tinfoilOnlyMode = getCheckboxStatus("tinfoilOnlyModeCheck");
+        $("#encryptShopCheck").prop("checked", tinfoilOnlyMode || getCheckboxStatus("encryptShopCheck"));
+        $("#encryptShopCheck").prop("disabled", tinfoilOnlyMode);
+    }
+
+    function clearSettingsErrors() {
+        Object.values(settings_map).forEach(function (formId) {
+            const form = $('#' + formId);
+            form.removeClass('is-invalid');
+            const formTextElement = form.attr('aria-describedby');
+            if (formTextElement) {
+                $("#" + formTextElement).removeClass('invalid-feedback');
+            }
+        });
+    }
+
+    function renderSettingsErrors(errors) {
+        (errors || []).forEach(function (error) {
+            const path = error['path'];
+            const formId = settings_map[path];
+            if (!formId) {
+                return;
+            }
+            const form = $('#' + formId);
+            form.addClass('is-invalid');
+            const formTextElement = form.attr('aria-describedby');
+            if (!formTextElement) {
+                return;
+            }
+            $("#" + formTextElement).addClass('invalid-feedback');
+            $("#" + formTextElement).text(error['error']);
+        });
     }
 
     function normalizeLibraryNamingTemplates(raw) {
@@ -1776,6 +1818,7 @@
 
     function submitShopSettings() {
         $('#submitShopSettingsBtn').prop('disabled', true);
+        clearSettingsErrors();
         const threshold = parsePositiveInt(getInputVal("authIpLockoutThresholdInput"), 5);
         const windowSeconds = parsePositiveInt(getInputVal("authIpLockoutWindowInput"), 600);
         const durationSeconds = parsePositiveInt(getInputVal("authIpLockoutDurationInput"), 1800);
@@ -1785,6 +1828,7 @@
             public: getCheckboxStatus("publicShopCheck"),
             external_tinfoil_only: getCheckboxStatus("externalTinfoilOnlyCheck"),
             encrypt: getCheckboxStatus("encryptShopCheck"),
+            tinfoil_only_mode: getCheckboxStatus("tinfoilOnlyModeCheck"),
             fast_transfer_mode: getCheckboxStatus("fastTransferModeCheck"),
             auth_ip_lockout_enabled: getCheckboxStatus("authIpLockoutEnabledCheck"),
             auth_ip_lockout_threshold: threshold,
@@ -1804,16 +1848,7 @@
             contentType: "application/json",
             success: function (result) {
                 if (!result['success']) {
-                    console.log('Not Success!');
-                    result['errors'].forEach(error => {
-                        path = error['path'];
-                        formId = settings_map[path];
-                        form = $('#' + formId);
-                        form.addClass('is-invalid');
-                        formTextElement = form.attr('aria-describedby');
-                        $("#" + formTextElement).addClass('invalid-feedback');
-                        $("#" + formTextElement).text(error['error']);
-                    });
+                    renderSettingsErrors(result['errors']);
                 } else {
                     syncShopSecurityNotices({
                         host: data['host'],
@@ -1821,6 +1856,11 @@
                         hauth_value: data['hauth']
                     });
                 }
+                $('#submitShopSettingsBtn').prop('disabled', false);
+            },
+            error: function (xhr) {
+                const result = xhr && xhr.responseJSON ? xhr.responseJSON : {};
+                renderSettingsErrors(result['errors']);
                 $('#submitShopSettingsBtn').prop('disabled', false);
             }
         });
@@ -2647,6 +2687,7 @@
         
         fillLibraryTable();
         $("#torrentClientTypeSelect").on("change", updateTorrentClientFieldState);
+        $("#tinfoilOnlyModeCheck").on("change", syncTinfoilOnlyModeControls);
         $('#libraryTemplateBaseFolderInput, #libraryTemplateBaseFilenameInput, #libraryTemplateUpdateFolderInput, #libraryTemplateUpdateFilenameInput, #libraryTemplateDlcFolderInput, #libraryTemplateDlcFilenameInput, #libraryTemplateOtherFolderInput, #libraryTemplateOtherFilenameInput')
             .on('change', function () { submitLibrarySettings(); });
 
@@ -2750,7 +2791,9 @@
             $("#publicShopCheck").prop("checked", shopSettings['public']);
             $("#externalTinfoilOnlyCheck").prop("checked", !!shopSettings['external_tinfoil_only']);
             $("#encryptShopCheck").prop("checked", shopSettings['encrypt']);
+            $("#tinfoilOnlyModeCheck").prop("checked", !!shopSettings['tinfoil_only_mode']);
             $("#fastTransferModeCheck").prop("checked", !!shopSettings['fast_transfer_mode']);
+            syncTinfoilOnlyModeControls();
             setInputVal("shopPublicKeyInput", shopSettings['public_key'] || '');
             securitySettings = result['security'] || {};
             $("#authIpLockoutEnabledCheck").prop("checked", securitySettings['auth_ip_lockout_enabled'] !== false);

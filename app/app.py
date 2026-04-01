@@ -469,7 +469,8 @@ shop_sections_cache = {
     'limit': None,
     'timestamp': 0,
     'state_token': None,
-    'payload': None
+    'payload': None,
+    'encrypted': {},
 }
 shop_sections_cache_lock = threading.Lock()
 shop_sections_refresh_lock = threading.Lock()
@@ -481,6 +482,7 @@ shop_root_cache = {
     'encrypted': {},
 }
 _SHOP_ROOT_ENCRYPTED_CACHE_LIMIT = 8
+_SHOP_SECTIONS_ENCRYPTED_CACHE_LIMIT = 8
 _TITLES_METADATA_CACHE_VERSION = 3
 titles_metadata_cache_lock = threading.Lock()
 titles_metadata_cache = {
@@ -642,6 +644,54 @@ def _get_cached_encrypted_shop_payload(shop_payload, public_key, verified_host):
             ordered_keys = list(encrypted_cache.keys())[-_SHOP_ROOT_ENCRYPTED_CACHE_LIMIT:]
             shop_root_cache['encrypted'] = {k: encrypted_cache[k] for k in ordered_keys}
     return payload
+
+
+def _get_cached_encrypted_shop_sections_payload(shop_payload, public_key, cache_limit, full_catalog=False):
+    state_token = _get_titledb_aware_state_token()
+    cache_key = (state_token, int(cache_limit), bool(full_catalog), str(public_key or ''))
+
+    with shop_sections_cache_lock:
+        encrypted_cache = shop_sections_cache.setdefault('encrypted', {})
+        cached = encrypted_cache.get(cache_key)
+        if isinstance(cached, (bytes, bytearray)):
+            return bytes(cached)
+
+    payload = encrypt_shop(shop_payload, public_key_pem=public_key, compression_level=6)
+    with shop_sections_cache_lock:
+        encrypted_cache = shop_sections_cache.setdefault('encrypted', {})
+        encrypted_cache[cache_key] = payload
+        if len(encrypted_cache) > _SHOP_SECTIONS_ENCRYPTED_CACHE_LIMIT:
+            ordered_keys = list(encrypted_cache.keys())[-_SHOP_SECTIONS_ENCRYPTED_CACHE_LIMIT:]
+            shop_sections_cache['encrypted'] = {k: encrypted_cache[k] for k in ordered_keys}
+    return payload
+
+
+def _respond_with_shop_payload(payload, verified_host=None, cache_kind=None, cache_limit=None, full_catalog=False):
+    response_payload = payload
+    if verified_host is not None and not response_payload.get('referrer'):
+        response_payload = dict(response_payload)
+        response_payload['referrer'] = f"https://{verified_host}"
+
+    if app_settings['shop']['encrypt']:
+        public_key = app_settings['shop'].get('public_key')
+        if cache_kind == 'root':
+            encrypted = _get_cached_encrypted_shop_payload(
+                response_payload,
+                public_key=public_key,
+                verified_host=verified_host,
+            )
+        elif cache_kind == 'sections':
+            encrypted = _get_cached_encrypted_shop_sections_payload(
+                response_payload,
+                public_key=public_key,
+                cache_limit=cache_limit,
+                full_catalog=full_catalog,
+            )
+        else:
+            encrypted = encrypt_shop(response_payload, public_key_pem=public_key, compression_level=6)
+        return Response(encrypted, mimetype='application/octet-stream')
+
+    return jsonify(response_payload)
 
 def _is_titledb_unrecognized(info):
     try:
@@ -928,11 +978,13 @@ def _store_shop_sections_cache(payload, limit, timestamp, state_token, persist_d
             shop_sections_cache['limit'] = None
             shop_sections_cache['timestamp'] = 0
             shop_sections_cache['state_token'] = None
+            shop_sections_cache['encrypted'] = {}
         else:
             shop_sections_cache['payload'] = cache_payload
             shop_sections_cache['limit'] = limit
             shop_sections_cache['timestamp'] = timestamp
             shop_sections_cache['state_token'] = state_token
+            shop_sections_cache['encrypted'] = {}
 
     if persist_disk:
         _save_shop_sections_cache_to_disk(payload, limit, timestamp, state_token=state_token)
@@ -2866,15 +2918,11 @@ def tinfoil_access(f):
                                         {'id': 'all', 'title': 'All', 'items': [placeholder_item]},
                                     ]
                                 }
-                                return jsonify(empty_sections)
+                                return _respond_with_shop_payload(empty_sections)
 
                             placeholder = {"url": "/api/frozen/notice#frozen.txt", "size": 1}
                             shop = {"success": message, "files": [placeholder]}
-                            if request.verified_host is not None:
-                                shop["referrer"] = f"https://{request.verified_host}"
-                            if app_settings['shop']['encrypt']:
-                                return Response(encrypt_shop(shop, app_settings['shop'].get('public_key')), mimetype='application/octet-stream')
-                            return jsonify(shop)
+                            return _respond_with_shop_payload(shop, verified_host=request.verified_host)
                 except Exception:
                     pass
                 return tinfoil_error(auth_error)
@@ -2930,15 +2978,11 @@ def tinfoil_access(f):
                                 {'id': 'all', 'title': 'All', 'items': [placeholder_item]},
                             ]
                         }
-                        return jsonify(empty_sections)
+                        return _respond_with_shop_payload(empty_sections)
 
                     placeholder = {"url": "/api/frozen/notice#frozen.txt", "size": 1}
                     shop = {"success": message, "files": [placeholder]}
-                    if request.verified_host is not None:
-                        shop["referrer"] = f"https://{request.verified_host}"
-                    if app_settings['shop']['encrypt']:
-                        return Response(encrypt_shop(shop, app_settings['shop'].get('public_key')), mimetype='application/octet-stream')
-                    return jsonify(shop)
+                    return _respond_with_shop_payload(shop, verified_host=request.verified_host)
 
                 return tinfoil_error(message)
         except Exception:
@@ -2973,6 +3017,7 @@ def access_shop_auth():
 def index():
     is_shop_client = _is_shop_client_request()
     is_allowed_external_client = _is_shop_client_request()
+    tinfoil_only_mode = bool((app_settings.get('shop') or {}).get('tinfoil_only_mode', False))
     if bool(app_settings.get('shop', {}).get('external_tinfoil_only', False)):
         remote = _effective_remote_addr()
         if remote and not _is_private_ip(remote) and not is_allowed_external_client:
@@ -2984,11 +3029,6 @@ def index():
         shop = {
             "success": app_settings['shop']['motd']
         }
-        
-        if request.verified_host is not None:
-            # enforce client side host verification
-            shop["referrer"] = f"https://{request.verified_host}"
-            
         shop["files"] = _get_cached_shop_files()
 
         if _is_cyberfoil_request():
@@ -3000,19 +3040,15 @@ def index():
                 duration_ms=int((time.time() - start_ts) * 1000),
             )
 
-        if app_settings['shop']['encrypt']:
-            encrypted = _get_cached_encrypted_shop_payload(
-                shop,
-                public_key=app_settings['shop'].get('public_key'),
-                verified_host=request.verified_host
-            )
-            return Response(encrypted, mimetype='application/octet-stream')
-
-        return jsonify(shop)
+        return _respond_with_shop_payload(shop, verified_host=request.verified_host, cache_kind='root')
     
-    if is_shop_client:
-    # if True:
-        logger.info(f"Shop client connection from {request.remote_addr}")
+    if is_shop_client or tinfoil_only_mode:
+        logger.info(
+            "Serving shop protocol response from %s (client_detected=%s, tinfoil_only_mode=%s)",
+            request.remote_addr,
+            bool(is_shop_client),
+            bool(tinfoil_only_mode),
+        )
         return access_tinfoil_shop()
 
     # Frozen accounts: web UI should only show the MOTD message.
@@ -3789,6 +3825,12 @@ def set_shop_settings_api():
             security_data[key] = shop_data.pop(key)
 
     shop_data.setdefault('host', '')
+    current_settings = load_settings(force_reload=True)
+    merged_shop = dict(current_settings.get('shop', {}))
+    merged_shop.update(shop_data)
+    success, errors = verify_settings('shop', merged_shop)
+    if not success:
+        return jsonify({'success': False, 'errors': errors}), 400
     set_shop_settings(shop_data)
     if security_data:
         set_security_settings(security_data)
@@ -5833,6 +5875,7 @@ def set_manual_title_info_api():
         shop_sections_cache['timestamp'] = 0
         shop_sections_cache['limit'] = None
         shop_sections_cache['state_token'] = None
+        shop_sections_cache['encrypted'] = {}
     with titles_metadata_cache_lock:
         titles_metadata_cache['version'] = _TITLES_METADATA_CACHE_VERSION
         titles_metadata_cache['state_token'] = None
@@ -6053,6 +6096,7 @@ def shop_sections_api():
             shop_sections_cache['limit'] = None
             shop_sections_cache['timestamp'] = 0
             shop_sections_cache['state_token'] = None
+            shop_sections_cache['encrypted'] = {}
 
     if payload is None:
         if SHOP_SECTIONS_CACHE_TTL_S is None or SHOP_SECTIONS_CACHE_TTL_S > 0:
@@ -6085,7 +6129,12 @@ def shop_sections_api():
             duration_ms=int((time.time() - start_ts) * 1000),
         )
 
-    return jsonify(payload)
+    return _respond_with_shop_payload(
+        payload,
+        cache_kind='sections',
+        cache_limit=cache_limit,
+        full_catalog=is_cyberfoil,
+    )
 
 
 @app.get('/api/shop/icon/<title_id>')
@@ -6419,6 +6468,7 @@ def _run_post_library_change():
                 shop_sections_cache['timestamp'] = 0
                 shop_sections_cache['limit'] = None
                 shop_sections_cache['state_token'] = None
+                shop_sections_cache['encrypted'] = {}
             _invalidate_shop_root_cache()
             with titles_metadata_cache_lock:
                 titles_metadata_cache['version'] = _TITLES_METADATA_CACHE_VERSION
