@@ -2139,6 +2139,20 @@ def _delete_target_apps(target_apps, dry_run=False, verbose=False, detail_limit=
         results['success'] = False
     return results
 
+
+def _remove_skip_details(results):
+    if not isinstance(results, dict):
+        return results
+    details = results.get('details')
+    if not isinstance(details, list):
+        return results
+    results['details'] = [
+        detail
+        for detail in details
+        if not str(detail or '').startswith('Skip ')
+    ]
+    return results
+
 def delete_library_content(scope, dry_run=False, verbose=False, detail_limit=200, title_id=None, app_id=None, app_type=None, version=None):
     try:
         target_apps = _resolve_delete_targets(
@@ -2182,12 +2196,13 @@ def delete_orphaned_addons(dry_run=False, verbose=False, detail_limit=200):
         )
         .all()
     )
-    return _delete_target_apps(
+    results = _delete_target_apps(
         target_apps,
         dry_run=dry_run,
         verbose=verbose,
         detail_limit=detail_limit
     )
+    return _remove_skip_details(results)
 
 def delete_older_updates(dry_run=False, verbose=False, detail_limit=200):
     results = _new_delete_results()
@@ -2226,7 +2241,7 @@ def delete_older_updates(dry_run=False, verbose=False, detail_limit=200):
 
     if results['errors']:
         results['success'] = False
-    return results
+    return _remove_skip_details(results)
 
 def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
     results = _new_delete_results()
@@ -2307,7 +2322,7 @@ def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
 
     if results['errors']:
         results['success'] = False
-    return results
+    return _remove_skip_details(results)
 
 def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbose=False, detail_limit=200, log_cb=None, progress_cb=None, stream_output=False, threads=None, library_id=None, cancel_cb=None, timeout_seconds=None, min_size_bytes=None, verify=True):
     # Clear any previous failed transaction state before starting a new conversion run.

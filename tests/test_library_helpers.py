@@ -34,6 +34,7 @@ try:
         _pending_cleanup_roots,
         _pending_organize_paths,
         _sanitize_component,
+        delete_duplicates,
         delete_older_updates,
         delete_library_content,
         delete_orphaned_addons,
@@ -346,8 +347,20 @@ class LibraryHelperTests(unittest.TestCase):
             detail_limit=200,
         )
 
+    @patch("app.library._delete_target_apps", return_value={"success": True, "deleted": 1, "skipped": 2, "mutated": False, "errors": [], "details": ["Skip UPDATE 0100AAAA v1: no linked files.", "Deleted: X:\\library\\orphaned.nsp."]})
+    def test_delete_orphaned_addons_omits_skip_details_from_output(self, delete_targets_mock):
+        with flask_app.app_context():
+            with patch("app.library.Apps.query") as apps_query_mock, patch("app.library.db.session.query") as session_query_mock:
+                session_query_mock.return_value.filter.return_value.exists.return_value = self._InvertibleExpr()
+                apps_query_mock.join.return_value.filter.return_value.all.return_value = ["orphan-app"]
+
+                result = delete_orphaned_addons(dry_run=True, verbose=True)
+
+        self.assertEqual(result["skipped"], 2)
+        self.assertEqual(result["details"], ["Deleted: X:\\library\\orphaned.nsp."])
+
     @patch("app.library._delete_target_apps")
-    def test_delete_older_updates_skips_shared_base_xci(self, delete_targets_mock):
+    def test_delete_older_updates_omits_skip_details_from_output(self, delete_targets_mock):
         title = SimpleNamespace(id=1, title_id="01005270232F2000")
         older_update = self._make_app(10, "01005270232F2800", "UPDATE", 1)
         latest_update = self._make_app(11, "01005270232F2800", "UPDATE", 2)
@@ -379,13 +392,48 @@ class LibraryHelperTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["deleted"], 0)
         self.assertEqual(result["skipped"], 1)
-        self.assertTrue(any("Skip shared file" in line for line in result["details"]))
+        self.assertEqual(result["details"], [])
         delete_targets_mock.assert_called_once_with(
             [older_update],
             dry_run=True,
             verbose=True,
             detail_limit=200,
         )
+
+    @patch("app.library.os.path.getmtime", side_effect=[10, 5, 1])
+    @patch("app.library.os.path.exists", return_value=True)
+    def test_delete_duplicates_omits_skip_details_but_keeps_delete_plan_details(
+        self,
+        exists_mock,
+        getmtime_mock,
+    ):
+        single_file_app = self._make_app(20, "0100SINGLE000000", "BASE", 0)
+        single_file = self._make_file(301, "X:\\library\\single.nsp", [single_file_app])
+        single_file.extension = "nsp"
+        single_file.size = 10
+        single_file_app.files = [single_file]
+
+        duplicate_app = self._make_app(21, "0100DUPES0000000", "UPDATE", 1)
+        keeper_file = self._make_file(302, "X:\\library\\keeper.nsz", [duplicate_app])
+        keeper_file.extension = "nsz"
+        keeper_file.size = 100
+        duplicate_file = self._make_file(303, "X:\\library\\duplicate.nsp", [duplicate_app])
+        duplicate_file.extension = "nsp"
+        duplicate_file.size = 90
+        duplicate_app.files = [keeper_file, duplicate_file]
+
+        with flask_app.app_context():
+            with patch("app.library.Apps.query") as apps_query_mock:
+                apps_query_mock.filter.return_value.all.return_value = [single_file_app, duplicate_app]
+
+                result = delete_duplicates(dry_run=True, verbose=True)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["deleted"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertFalse(any(line.startswith("Skip ") for line in result["details"]))
+        self.assertTrue(any("Keep 0100DUPES0000000 v1" in line for line in result["details"]))
+        self.assertTrue(any("Plan delete duplicate 0100DUPES0000000 v1" in line for line in result["details"]))
 
     @patch("app.library.delete_file_by_filepath")
     @patch("app.library.os.remove")
